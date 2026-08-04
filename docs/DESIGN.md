@@ -58,6 +58,7 @@ class ReasoningIteration:
     can_answer: bool
     response: str
 
+
 @dataclass(frozen=True)
 class ReasoningResult:
     answer: str
@@ -273,29 +274,40 @@ is what keeps the context flat across hops and makes step 4 reproducible.
 
 ## 6. Phased plan
 
-### P0 — Scaffolding (0.5 day)
+### P0 — Scaffolding ✅ done
 
-`uv` project, `ruff` + `mypy --strict`, `pytest` + `pytest-asyncio`, CI on
-3.11/3.12/3.13, Apache-2.0. A `tests/contract/test_studio_port.py` that
-re-declares Studio's `ReasoningRunner` Protocol locally and asserts
-`isinstance(GlosaReasoningRunner(...), ReasoningRunner)` — conformance without
-a dependency.
+`uv` project, MIT, `ruff` + `mypy --strict`, `pytest` + `pytest-asyncio`, CI on
+3.12/3.13. `tests/contract/test_studio_port.py` re-declares Studio's
+`ReasoningRunner` Protocol by transcription and asserts
+`isinstance(GlosaReasoningRunner(...), ReasoningRunner)` — conformance without a
+dependency in either direction.
 
-### P1 — Drop-in replacement (3–4 days)
+### P1 — Drop-in replacement ✅ done
 
-`DocIndex`, outline rendering, `ChatModel` port + Ollama and OpenAI adapters,
-constrained decoding, `strategy/navigate.py` (sequential first, same shape as
-today), `adapters/studio.py`, `adapters/legacy.py`.
+Shipped: `DocIndex` (single-pass, real heading levels, page fallback, preamble
+units, per-document render + excerpt caches), budget-aware outline rendering,
+`ChatModel` port with Ollama and OpenAI-compatible adapters, schema-constrained
+decoding with a repair round-trip, `NavigateStrategy` (cheap path for short
+documents, flat notes memory, four-valued outcome, recoverable ref selection,
+step/call/deadline budgets), `GlosaReasoningRunner` with host-type factories,
+and a CLI (`glosa ask` / `glosa map`).
 
-*Done when*: Studio boots with `GlosaReasoningRunner` after a one-class change
-in `main.py`; the existing reasoning tests pass unmodified; the Vue trace
-overlay is untouched; the same question answered against Ollama **and** an
-OpenAI-compatible endpoint.
+64 tests, `mypy --strict` clean. Integration steps are in
+[`INTEGRATION.md`](INTEGRATION.md).
 
-### P2 — Better loop (4–5 days)
+*Verified*: the runner satisfies Studio's protocol; iterations expose exactly
+the six legacy fields; host factories return Studio's own dataclasses; parse
+failures surface as the host's exception; a document is parsed once across
+queries.
 
-BM25 shortlist + RRF fusion, parallel frontier, notes memory, budgets,
-abstention, heading-less segmentation, multi-document.
+*Not yet verified* (needs a running Studio + Ollama): the end-to-end round trip
+against a real backend, and the Vue overlay rendering a glosa trace.
+
+### P2 — Better loop (3–4 days)
+
+BM25 shortlist + RRF fusion, parallel frontier, multi-document with a shared
+budget. Notes memory, budgets, abstention and heading-less segmentation landed
+early in P1 — they were cheap and they carry most of the robustness win.
 
 *Done when*: on a 20-question benchmark over 5 Studio-converted PDFs —
 ≥30 % fewer tokens, ≥40 % lower p95 latency, and ≥1 correct abstention where
@@ -350,17 +362,21 @@ one release, selected by `REASONING_RUNNER=docling-agent|glosa`.
 
 ---
 
-## 8. Open decisions
+## 8. Decisions
 
-1. **License** — Apache-2.0 (Docling ecosystem convention) vs Studio's current
-   license. Needs a one-line answer before P0.
-2. **Repo layout** — standalone package (recommended: independently testable,
-   publishable, and reusable outside Studio) vs a `reasoning/` module inside
-   Studio. The design assumes standalone.
-3. **Python floor** — 3.11 (Studio uses `StrEnum`) or 3.12.
-4. **Upstreaming** — several fixes here (the `IndexError`, the page-summary
-   `break`, the flat-section depth bug) are worth PRs to `docling-agent`
-   regardless. Doing so is good citizenship and costs little.
-5. **Benchmark corpus** — needs ~5 representative PDFs + 20 questions with
-   known answers, ideally from a real client use case. This is the gating item
-   for P2's acceptance criteria; everything else is code.
+| Question | Decision |
+| -------- | -------- |
+| License | **MIT** |
+| Repo layout | **Standalone package** — independently testable, publishable, usable outside Studio |
+| Python floor | **3.12** — matches `document-parser`'s `requires-python = ">=3.12"`, so glosa installs into the same venv |
+| Dependencies | `docling-core`, `httpx`, `pydantic`. Nothing else, ever, in the core |
+
+Still open:
+
+1. **Benchmark corpus** — ~5 representative PDFs + 20 questions with known
+   answers, ideally from a real engagement. Deferred by agreement; it gates
+   P2's *acceptance criteria*, not P2's code, so the loop work can start and be
+   measured retroactively once the corpus exists.
+2. **Upstreaming** — the `IndexError`, the page-summary `break`, and the
+   flat-section depth bug are worth PRs to `docling-agent` regardless of what
+   Studio ends up running. Cheap, and good citizenship.

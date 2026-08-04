@@ -1,0 +1,69 @@
+[project]
+name = "glosa"
+version = "0.1.0.dev0"
+description = "Grounded document-reading engine for DoclingDocument — a ReasoningRunner for Docling Studio"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+authors = [{ name = "Scub" }]
+keywords = ["docling", "rag", "document-ai", "reasoning"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Text Processing :: Markup",
+]
+dependencies = [
+  "docling-core>=2.0.0,<3.0.0",
+  "httpx>=0.27.0,<1.0.0",
+  "pydantic>=2.8.0,<3.0.0",
+]
+
+[project.scripts]
+glosa = "glosa.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/pjmalandrino/glosa"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.0.0,<9.0.0",
+  "pytest-asyncio>=0.24.0,<2.0.0",
+  "ruff>=0.11.0,<1.0.0",
+  "mypy>=1.13.0,<2.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/glosa"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "ANN", "ASYNC"]
+ignore = ["ANN401"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["ANN"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src/glosa"]
+
+[[tool.mypy.overrides]]
+module = ["docling_core.*"]
+follow_untyped_imports = true
+no_implicit_reexport = false
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

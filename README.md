@@ -26,8 +26,55 @@ chunkless RAG loop:
 **Scope.** `glosa` owns *read / answer / cite / extract*. It does not write,
 edit or enrich documents — `docling-agent` remains the better tool for that.
 
-See [`docs/DESIGN.md`](docs/DESIGN.md) for the full design and implementation plan.
+## Install
+
+```bash
+uv add glosa          # Python 3.12+
+```
+
+## Use
+
+```python
+from glosa import GlosaReasoningRunner, OllamaChatModel
+
+runner = GlosaReasoningRunner(
+    OllamaChatModel(base_url="http://localhost:11434", model_id="granite3.3:8b")
+)
+
+trace = await runner.run_trace(document_json=doc_json, query="What is the penalty rate?")
+print(trace.status, trace.answer)
+for step in trace.steps:
+    print(step.ref, step.reason, [s.bbox for s in step.spans])
+```
+
+From the shell:
+
+```bash
+glosa map --document analysis.json
+glosa ask --document analysis.json --query "What is the penalty rate?"
+glosa ask --document analysis.json --query "..." --provider openai --model gpt-4.1-mini
+```
+
+Inside Docling Studio, `runner.run(...)` returns Studio's own
+`ReasoningResult` / `ReasoningIteration` — see
+[`docs/INTEGRATION.md`](docs/INTEGRATION.md) for the wire-up.
+
+## Docs
+
+- [`docs/DESIGN.md`](docs/DESIGN.md) — design, phased plan, what we do differently
+- [`docs/INTEGRATION.md`](docs/INTEGRATION.md) — dropping glosa into Docling Studio
 
 ## Status
 
-Design phase. Nothing is implemented yet.
+Alpha. Phases P0–P1 are done: indexing, outline navigation, Ollama and
+OpenAI-compatible backends, schema-constrained decoding, budgets, and the
+Studio-facing runner. Retrieval pre-ranking, parallel reads, evidence spans and
+streaming are next — see the plan.
+
+## Development
+
+```bash
+uv sync
+uv run pytest -q
+uv run ruff check . && uv run ruff format --check . && uv run mypy
+```
