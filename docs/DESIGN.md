@@ -81,8 +81,17 @@ Two consequences worth stating plainly:
    realistic fixtures.
 
 The collapse rules live behind a `TreeReader` port that mirrors Studio's
-`DocumentTreeReader`. Pass Studio's own `DoclingTreeReader` and the deployment
-has exactly one implementation; omit it and glosa uses a bundled mirror.
+`DocumentTreeReader`. Pass Studio's own `DoclingTreeReader` — already wired at
+`main.py:321` — and the deployment has exactly one implementation; omit it and
+glosa uses a bundled mirror.
+
+One rule stays duplicated, and it is the one that hurts: **section scoping lives
+in the frontend**. `sectionParenting.ts` derives it at render time from the NEXT
+chain, so every backend consumer — glosa, chunking, ingestion — has to re-derive
+it and can drift. If the projection ever carried the owning section on each
+element node (a `section_ref` field, or an `IN_SECTION` edge), the frontend
+would render it instead of computing it, and the duplication would disappear.
+Worth a Studio-side issue.
 
 ---
 

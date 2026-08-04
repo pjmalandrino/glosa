@@ -30,7 +30,6 @@ from glosa import GlosaReasoningRunner, OllamaChatModel, OpenAIChatModel
 
 from domain.ports import ReasoningParseError
 from domain.value_objects import LLMProviderType, ReasoningIteration, ReasoningResult
-from infra.docling_tree import DoclingTreeReader
 
 
 def _build_chat_model(settings):
@@ -49,9 +48,10 @@ def _build_chat_model(settings):
 if settings.reasoning_enabled:
     app.state.reasoning_runner = GlosaReasoningRunner(
         _build_chat_model(settings),
-        # Studio's own DoclingTreeReader: one implementation of the
-        # InlineGroup / picture collapse rules in the whole deployment.
-        tree_reader=DoclingTreeReader(),
+        # The DoclingTreeReader already wired at main.py:321 for ChunkService.
+        # Reusing it means one implementation of the InlineGroup / picture
+        # collapse rules in the whole deployment.
+        tree_reader=app.state.tree_reader,
         result_factory=ReasoningResult,
         iteration_factory=ReasoningIteration,
         parse_error_factory=ReasoningParseError,
@@ -149,6 +149,7 @@ collapse rule, a label mapping or the reading order, glosa must follow, and
 `tests/contract/test_studio_tree_parity.py` plus
 `tests/contract/test_studio_section_scoping.py` are what should fail first.
 
-Passing `tree_reader=DoclingTreeReader()` removes half the risk outright: the
+Passing `tree_reader=app.state.tree_reader` removes half the risk outright: the
 collapse rules then come from Studio at runtime, and only the section-scoping
-rule stays duplicated.
+rule stays duplicated — which is itself avoidable if the projection ever carries
+the section a node belongs to (see the note at the end of `DESIGN.md` §2).
