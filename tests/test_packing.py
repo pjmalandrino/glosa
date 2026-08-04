@@ -13,7 +13,7 @@ def _long_section_json() -> str:
     doc = DoclingDocument(name="appendix")
     pages(doc, 1)
     heading = doc.add_heading(text="Appendix C", level=1, prov=prov(1, 740))
-    for i in range(20):
+    for i in range(60):
         doc.add_text(
             label=DocItemLabel.TEXT,
             text=f"Paragraph {i} about unrelated administrative arrangements. " * 6,
@@ -135,3 +135,15 @@ def test_excerpts_are_cached_per_focus() -> None:
     ref = index.units[0].ref
     assert index.excerpt(ref, focus="cap") is index.excerpt(ref, focus="cap")
     assert index.excerpt(ref, focus="cap") is not index.excerpt(ref, focus="other")
+
+
+def test_retrieval_indexes_the_whole_section_not_the_budgeted_excerpt() -> None:
+    """The bug this guards: indexing `excerpt()` capped the corpus at the
+    default budget, so a term past that offset scored zero and the section was
+    never shortlisted — in exactly the long sections query-aware packing exists
+    to rescue."""
+    index = index_of(_long_section_json())
+    unit = index.units[0]
+
+    assert unit.char_len > len(index.excerpt(unit.ref).text), "fixture must overflow the budget"
+    assert index.ranker.shortlist("indemnity cap")[0].ref == unit.ref

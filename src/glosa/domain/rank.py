@@ -60,7 +60,10 @@ class UnitRanker:
 
     def __init__(self, index: DocIndex) -> None:
         self._units = {unit.ref: unit for unit in index.units}
-        self._body = Bm25Index((unit.ref, index.excerpt(unit.ref).text) for unit in index.units)
+        # Deliberately `text_of`, not `excerpt`: the excerpt is budget-capped,
+        # and indexing a truncated section hides precisely the terms that make
+        # a long section worth opening.
+        self._body = Bm25Index((unit.ref, index.text_of(unit.ref)) for unit in index.units)
         self._titles = Bm25Index((unit.ref, unit.title) for unit in index.units)
 
     @property

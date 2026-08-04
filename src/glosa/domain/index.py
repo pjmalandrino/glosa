@@ -192,6 +192,16 @@ class DocIndex:
     def get(self, ref: str) -> Unit | None:
         return self._units.get(ref)
 
+    def text_of(self, ref: str) -> str:
+        """Full text of a unit, ignoring every budget.
+
+        Retrieval must index what the document *says*, not what happens to fit
+        in a prompt: indexing the budgeted excerpt makes a term at character
+        12,000 of a long section unfindable, which is exactly the section
+        query-aware packing exists to rescue.
+        """
+        return "\n\n".join(e.text for e in self._elements.get(ref, ()) if e.text)
+
     def excerpt(
         self,
         ref: str,
