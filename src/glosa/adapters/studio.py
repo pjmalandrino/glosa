@@ -69,9 +69,7 @@ class GlosaReasoningRunner:
             the bundled Docling projector; pass one built with the host's own
             tree reader so the collapse rules have a single implementation.
         config: Loop tuning. Defaults suit a 30-page report on a local 8B model.
-            Retrieval-first with a parallel frontier; pass a `NavigateStrategy`
-            config instead by constructing the strategy yourself if you want
-            pure model-driven navigation.
+            Retrieval-first with a parallel frontier.
         cache_size: How many parsed documents to keep indexed. Studio asks
             several questions of the same document, and re-parsing it each time
             is pure waste.

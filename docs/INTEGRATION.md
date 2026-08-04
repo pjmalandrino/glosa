@@ -84,18 +84,18 @@ its current meaning.
 ## 4. Tuning
 
 ```python
-from glosa import NavigateConfig
+from glosa import HybridConfig
 
 GlosaReasoningRunner(
     model,
-    config=NavigateConfig(
+    config=HybridConfig(
         max_steps=6,  # reads before the loop gives up
         max_llm_calls=20,  # hard ceiling on round-trips
         deadline_s=180.0,  # wall-clock ceiling; cancellation is honoured
         outline_char_budget=6_000,  # document map size per prompt
         excerpt_char_budget=8_000,  # section text size per read
         direct_char_threshold=6_000,  # below this, read the whole document in one call
-        allow_revisit=True,
+        fanout=3,  # candidates read concurrently when the ranking is flat
     ),
 )
 ```

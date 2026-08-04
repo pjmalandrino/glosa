@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import Any, Protocol, runtime_checkable
 
 from glosa.adapters.studio import GlosaReasoningRunner
-from glosa.domain.navigate import Reading
+from glosa.domain.reading import Reading
 from tests.conftest import FakeChatModel
 
 

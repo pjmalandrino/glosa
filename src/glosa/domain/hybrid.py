@@ -15,9 +15,15 @@ they actually say, instead of the first one being committed to on the strength
 of its heading.
 
 Retrieval is wrong in a predictable way — it misses paraphrase — so it never
-decides alone. When the shortlist comes back empty (no lexical signal at all,
-which is different from "everything scored low") the loop falls back to
-`NavigateStrategy`'s model-driven hop for that round.
+decides alone. When the shortlist is not worth believing, the model is asked to
+pick, and both picks are read in the same round.
+
+This is the only reading loop in the package. An earlier version kept a second,
+purely model-driven strategy alongside it as a fallback; the hedge subsumed it,
+and two loops that can drift into producing different traces for the same
+document is not a feature. The baseline it represented lives in
+`tests/baseline.py`, where it belongs: something to measure against, not to
+ship.
 """
 
 from __future__ import annotations

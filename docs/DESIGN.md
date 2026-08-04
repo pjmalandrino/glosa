@@ -247,7 +247,6 @@ glosa/
                            summary and their model-written expansions
     reading.py          ✅ shared vocabulary: prompts, schemas, the three calls
     hybrid.py           ✅ default strategy: trust → expand → hedge → read
-    navigate.py         ✅ model-driven navigation; the fallback when retrieval is dry
     budget.py           ✅ step / call / wall-clock budget, deadline
     errors.py
   ports/                protocols only
@@ -408,10 +407,10 @@ Shipped: `StudioProjection` over Studio's collapsed document object (§2) behind
 a `TreeReader` port, `DocIndex` (scopes, page fallback, preamble units, render +
 excerpt caches), budget-aware outline rendering, `ChatModel` port with Ollama
 and OpenAI-compatible adapters, schema-constrained decoding with a repair
-round-trip, `NavigateStrategy` (cheap path for short documents, flat notes
-memory, four-valued outcome, recoverable ref selection, step/call/deadline
-budgets), `GlosaReasoningRunner` with host-type factories, and a CLI
-(`glosa ask` / `glosa map`).
+round-trip, the reading loop itself (cheap path for short documents, flat
+notes memory, four-valued outcome, recoverable ref selection,
+step/call/deadline budgets), `GlosaReasoningRunner` with host-type factories,
+and a CLI (`glosa ask` / `glosa map`).
 
 87 tests, `mypy --strict` clean, no `docling-core` at runtime. Integration steps
 are in [`INTEGRATION.md`](INTEGRATION.md).
@@ -446,8 +445,11 @@ What it changes, measured against the same scripted model on the same document:
 a question whose vocabulary appears in the text is answered in **one** LLM call
 instead of four, because the model no longer spends a round-trip choosing. When
 the vocabulary does not match — a French question against an English contract —
-the shortlist comes back empty and the round is handed to `NavigateStrategy`,
-which is why retrieval never decides alone.
+the shortlist is not believed and the model is asked to pick alongside it,
+which is why retrieval never decides alone. The four-call baseline is
+`tests/baseline.py`: the select-read-decide loop glosa replaced, kept as a
+measuring stick rather than shipped, so the package has exactly one way to
+answer a question.
 
 Multi-document moves to level 2 (see §1) rather than being bolted onto the
 single-document loop.

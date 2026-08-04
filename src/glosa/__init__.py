@@ -17,7 +17,6 @@ from glosa.domain.errors import (
 )
 from glosa.domain.hybrid import HybridConfig, HybridStrategy
 from glosa.domain.index import DocIndex, Unit
-from glosa.domain.navigate import NavigateConfig, NavigateStrategy
 from glosa.domain.rank import Candidate, UnitRanker
 from glosa.domain.values import (
     Element,
@@ -63,8 +62,6 @@ __all__ = [
     "LegacyIteration",
     "LegacyResult",
     "Message",
-    "NavigateConfig",
-    "NavigateStrategy",
     "OllamaChatModel",
     "OpenAIChatModel",
     "ReasoningParseError",

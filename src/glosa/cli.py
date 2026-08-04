@@ -17,8 +17,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from glosa.domain.hybrid import HybridConfig, HybridStrategy
 from glosa.domain.index import DocIndex
-from glosa.domain.navigate import NavigateConfig, NavigateStrategy
 from glosa.domain.outline import render_outline
 from glosa.domain.values import Trace
 from glosa.infra.docling.projection import DoclingProjector
@@ -38,7 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
     ask.add_argument("--base-url", default=None)
     ask.add_argument("--model", default="granite3.3:8b")
     ask.add_argument("--api-key", default=None)
-    ask.add_argument("--max-steps", type=int, default=NavigateConfig().max_steps)
+    ask.add_argument("--max-steps", type=int, default=HybridConfig().max_steps)
     ask.add_argument("--timeout", type=float, default=180.0)
     ask.add_argument("--json", action="store_true", help="print the full trace as JSON")
 
@@ -73,8 +73,8 @@ def _model_for(args: argparse.Namespace) -> ChatModel:
 async def _ask(args: argparse.Namespace) -> int:
     index = _index(args.document)
     model = _model_for(args)
-    strategy = NavigateStrategy(
-        model, NavigateConfig(max_steps=args.max_steps, deadline_s=args.timeout)
+    strategy = HybridStrategy(
+        model, HybridConfig(max_steps=args.max_steps, deadline_s=args.timeout)
     )
     try:
         trace = await strategy.run(index, args.query)

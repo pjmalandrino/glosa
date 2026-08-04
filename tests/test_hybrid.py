@@ -7,9 +7,9 @@ import asyncio
 from docling_core.types.doc import DocItemLabel, DoclingDocument
 
 from glosa.domain.hybrid import HybridConfig, HybridStrategy
-from glosa.domain.navigate import NavigateConfig, NavigateStrategy
 from glosa.domain.reading import QueryTerms, Reading, Selection
 from glosa.domain.values import RunStatus
+from tests.baseline import run_baseline
 from tests.conftest import FakeChatModel, index_of, pages, prov
 
 WIDE = 1_000.0
@@ -76,8 +76,12 @@ async def test_retrieval_picks_the_right_section_without_spending_a_call() -> No
     assert "lexical match" in trace.steps[0].reason
 
 
-async def test_the_same_question_costs_navigate_four_calls() -> None:
-    """The comparison the retrieval prior is there to win."""
+async def test_the_same_question_costs_the_baseline_loop_four_calls() -> None:
+    """The comparison the retrieval prior is there to win.
+
+    `tests/baseline.py` is the select-read-decide loop glosa replaced, driven by
+    the same prompts on the same document. Two calls per section, and it opens
+    the wrong one first because the heading does not say "penalty"."""
     document_json = _contract_json()
     refs = _refs(document_json)
     model = FakeChatModel(
@@ -88,12 +92,60 @@ async def test_the_same_question_costs_navigate_four_calls() -> None:
             Reading(sufficient=True, response="2% per week."),
         ]
     )
-    trace = await NavigateStrategy(model, NavigateConfig(direct_char_threshold=0)).run(
-        index_of(document_json), "late delivery penalty"
-    )
+    trace = await run_baseline(model, index_of(document_json), "late delivery penalty")
 
     assert trace.status is RunStatus.ANSWERED
     assert trace.llm_calls == 4
+
+
+async def test_context_stays_flat_across_rounds() -> None:
+    """Upstream keeps one growing session, so every section read stays in
+    context and the chunkless saving erodes. Here later prompts carry a short
+    note, never the previous section's body."""
+    doc = DoclingDocument(name="contract")
+    pages(doc, 1)
+    scope = doc.add_heading(text="Scope", level=1, prov=prov(1, 740))
+    doc.add_text(label=DocItemLabel.TEXT, text="SCOPETEXT " * 400, parent=scope, prov=prov(1, 700))
+    penalties = doc.add_heading(text="Penalties", level=1, prov=prov(1, 500))
+    doc.add_text(
+        label=DocItemLabel.TEXT,
+        text="Late delivery incurs 2% per week.",
+        parent=penalties,
+        prov=prov(1, 480),
+    )
+    model = FakeChatModel(
+        [
+            Reading(sufficient=False, response="Scope defines the works only."),
+            Reading(sufficient=True, response="2% per week."),
+        ]
+    )
+    config = cfg(fanout=1, decisive_ratio=WIDE)
+
+    await HybridStrategy(model, config).run(index_of(doc.model_dump_json()), "scope penalty rate")
+
+    first_read = model.structured_calls[0][-1].content
+    assert "SCOPETEXT" in first_read, "round 1 must actually show the section"
+
+    for later in model.structured_calls[1:]:
+        body = later[-1].content
+        assert "SCOPETEXT" not in body, "section text must not be carried forward"
+        assert "Scope defines the works only." in body, "the note must be"
+
+
+async def test_the_llm_call_ceiling_stops_the_run() -> None:
+    document_json = _contract_json()
+    model = FakeChatModel(
+        [
+            Reading(sufficient=False, response="a"),
+            Reading(sufficient=False, response="b"),
+        ]
+    )
+    config = cfg(fanout=1, decisive_ratio=WIDE, max_steps=5, max_llm_calls=2)
+
+    trace = await HybridStrategy(model, config).run(index_of(document_json), "works invoices")
+
+    assert trace.status is RunStatus.BUDGET_EXHAUSTED
+    assert trace.llm_calls <= 2
 
 
 # -- the frontier is actually parallel ----------------------------------------
