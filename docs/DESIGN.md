@@ -323,6 +323,28 @@ from reading as what glosa *is*.
 5. ✅ **Retrieval prior before LLM navigation.** BM25 costs microseconds and cuts
    the search space before the first token is spent. Fixes the
    "outline-too-big" failure and typically removes 1–3 hops.
+5b. ✅ **A map that says what each section is about.** `docling-agent` navigates
+   on headings alone, which collapses the moment a document numbers its
+   sections instead of naming them — a table of contents reading "Article 1 …
+   Article 42" is not a map. PageIndex solves it by paying an LLM call per node
+   to write a summary. glosa takes the free half: the section's **lead**, its
+   own opening sentences, shown under the heading in the outline. Two rules
+   keep it from being noise:
+
+   * a lead is shown only when it **distinguishes** — one term at most half the
+     other leads use, after subtracting what the heading already said.
+     Contracts that open every article with "Le présent article a pour objet…"
+     produce no lead at all, which is the right answer;
+   * leads are the **first thing dropped** under budget pressure. The candidate
+     list is restricted to the refs the map actually showed, so describing a
+     third of the sections is worse than listing all of them. Measured on a
+     100-section document at a 6 000-char budget: 37 refs survive with leads,
+     100 without — so the shipped renderer drops the leads and shows all 100.
+
+   A lead costs nothing at read time and changes navigation only — it is
+   already inside the body index, so the ranking is untouched. A section
+   opening on a table leads with its first *prose* element instead, or the
+   outline would describe it as `<table><tr><th>…`.
 6. ✅ **Abstention as a first-class outcome.** `status: answered |
    not_in_document | insufficient_evidence | budget_exhausted` instead of a
    boolean `converged` that conflates all four. Studio can render "this
@@ -408,9 +430,17 @@ against a real backend, and the Vue overlay rendering a glosa trace.
 
 Shipped: BM25 over the projected elements (`domain/lexical.py`), a `UnitRanker`
 fusing heading and body rankings by RRF, `HybridStrategy` — retrieval proposes,
-the model confirms, candidates are read concurrently — and query-aware excerpt
+the model confirms, candidates are read concurrently — query-aware excerpt
 packing, so an over-budget section keeps the passages that match the question
-instead of its first N characters.
+instead of its first N characters, and per-section leads in the outline (§6.5b)
+so a numbered table of contents still describes something.
+
+The hedge — read the lexical guess *and* the model's own pick when the
+shortlist is not worth believing — needs two slots by construction. It used to
+be clamped to `fanout`, so at `fanout=1` the lexical guess filled the round and
+the model was never asked while the step still claimed a low-confidence
+shortlist. `fanout` now caps breadth on a *confident* shortlist only; the
+budget still binds.
 
 What it changes, measured against the same scripted model on the same document:
 a question whose vocabulary appears in the text is answered in **one** LLM call

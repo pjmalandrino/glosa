@@ -9,10 +9,10 @@ projection, which owns those conventions).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
-from glosa.domain.lexical import Bm25Index
+from glosa.domain.lexical import Bm25Index, tokenize
 from glosa.domain.values import Excerpt, ExcerptPart, UnitKind
 
 if TYPE_CHECKING:
@@ -29,6 +29,15 @@ SELECTION_MARKER = (
 )
 _TITLE_CLIP = 120
 _MIN_PARTIAL_CHARS = 200
+LEAD_CLIP = 140
+"""How much of a section's opening is worth showing in a map."""
+_MIN_LEAD_CHARS = 24
+"""Below this, a sentence boundary is not worth cutting on — "Definitions."
+alone says less than the clause that follows it."""
+LEAD_DF_SHARE = 0.5
+"""A lead earns its place when it holds a term at most this share of the other
+leads use. Boilerplate — "Le présent article a pour objet…" repeated fifteen
+times — holds no such term and is dropped."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +62,11 @@ class Unit:
     summary: str = ""
     """Host-written summary of this scope, when enrichment ran. Empty otherwise."""
     keywords: tuple[str, ...] = ()
+    lead: str = ""
+    """The section's own opening prose, capped — free, and often the only thing
+    that distinguishes "Article 7" from "Article 8" in a map.
+
+    Empty when the opening says nothing the other sections' openings do not."""
 
     @property
     def enriched(self) -> bool:
@@ -95,6 +109,7 @@ class DocIndex:
             return
         if self.projection.has_sections:
             self._build_sections()
+            self._prune_boilerplate_leads()
             return
         if self.projection.page_numbers:
             self._build_pages()
@@ -122,7 +137,31 @@ class DocIndex:
                 element_refs=tuple(e.self_ref for e in elements),
                 summary=_summary_of(elements),
                 keywords=_keywords_of(elements),
+                lead=_lead_of(elements),
             )
+
+    def _prune_boilerplate_leads(self) -> None:
+        """Keep the leads that distinguish a section, drop the ones that do not.
+
+        Two ways an opening line says nothing, and both are common:
+
+        * every section opens the same way — "Le présent article a pour objet…"
+          — so the lead repeats across the map and separates nothing;
+        * the opening only restates its own heading, which the map already
+          prints on the line above.
+
+        Both are answered by the same question: after removing what the heading
+        already said, does this lead hold a word the other leads do not?
+        """
+        leads = {ref: unit.lead for ref, unit in self._units.items() if unit.lead}
+        if len(leads) < 2:
+            return
+        index = Bm25Index(leads.items())
+        for ref in leads:
+            unit = self._units[ref]
+            own = index.rare_terms(ref, max_share=LEAD_DF_SHARE) - set(tokenize(unit.title))
+            if not own:
+                self._units[ref] = replace(unit, lead="")
 
     def _build_pages(self) -> None:
         for order, page_no in enumerate(self.projection.page_numbers):
@@ -133,6 +172,8 @@ class DocIndex:
                 continue
             ref = self.projection.page_ref(page_no)
             self._elements[ref] = elements
+            # No lead: a page unit's title is already its opening text, so one
+            # would only repeat the line above it.
             self._units[ref] = Unit(
                 ref=ref,
                 node_id=self.projection.page_node_id(page_no),
@@ -163,6 +204,7 @@ class DocIndex:
             element_refs=tuple(e.self_ref for e in elements),
             summary=_summary_of(elements),
             keywords=_keywords_of(elements),
+            lead=_lead_of(elements),
         )
 
     # -- queries --------------------------------------------------------------
@@ -377,6 +419,45 @@ def _summary_of(elements: Sequence[Element]) -> str:
         if element.summary:
             return element.summary
     return ""
+
+
+def _lead_of(elements: Sequence[Element]) -> str:
+    """The scope's opening prose — the cheap half of what a summary buys.
+
+    `docling-agent` navigates on headings alone, which fails the moment a
+    document numbers its sections instead of naming them. PageIndex fixes that
+    by paying an LLM call per node to write a summary. The first line of the
+    section is neither: it costs nothing, it is the document's own words rather
+    than a model's, and on "Article 7 — Plafond d'indemnisation" it is the
+    difference between a number and a subject.
+
+    Tables and pictures are skipped — a section that opens on a table would
+    otherwise be described by `<table><tr><th>…`, which is worse than silence.
+    """
+    for element in elements:
+        if element.is_section or not element.is_prose:
+            continue
+        opening = _opening(element.text)
+        if opening:
+            return opening
+    return ""
+
+
+def _opening(text: str, limit: int = LEAD_CLIP) -> str:
+    """Whole sentences from the start of `text`, up to `limit` characters.
+
+    Cutting on sentence boundaries rather than at `limit` matters: a lead that
+    stops mid-clause reads as damage, and the map is meant to be scanned.
+    Falls back to a clip when the first sentence is longer than the budget.
+    """
+    flat = " ".join(text.split())
+    if len(flat) <= limit:
+        return flat
+    window = flat[: limit + 1]
+    cut = max(window.rfind(". "), window.rfind("? "), window.rfind("! "))
+    if cut >= _MIN_LEAD_CHARS:
+        return window[: cut + 1]
+    return flat[: limit - 1] + "…"
 
 
 def _keywords_of(elements: Sequence[Element]) -> tuple[str, ...]:

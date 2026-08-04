@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import pytest
+from docling_core.types.doc import DocItemLabel, DoclingDocument, TableCell, TableData
 
 from glosa.domain.errors import DocumentParseError
 from glosa.domain.index import DocIndex
 from glosa.domain.values import Element, UnitKind
 from glosa.infra.docling.projection import node_id_for, page_node_id
 from glosa.ports.document import DocumentProjection
-from tests.conftest import FakeProjection, index_of
+from tests.conftest import FakeProjection, index_of, pages, prov
 
 
 def _titles(document_json: str) -> list[str]:
@@ -129,6 +130,104 @@ def test_the_index_runs_on_any_projection_not_just_doclings() -> None:
     assert [u.ref for u in index.units] == ["a"]
     assert index.excerpt("a").text == "Chapter\n\nBody text."
     assert index.excerpt("a").node_ids == ("n::a", "n::b")
+
+
+# -- the lead: a section's own opening line ------------------------------------
+
+
+def _articles(*bodies: str, table_first: bool = False) -> str:
+    """Numbered headings — the case where a table of contents says nothing."""
+    doc = DoclingDocument(name="marche")
+    pages(doc, 1)
+    for i, body in enumerate(bodies):
+        heading = doc.add_heading(text=f"Article {i + 1}", level=1, prov=prov(1, 740))
+        if table_first and i == 0:
+            cell = TableCell(
+                text="Annee",
+                start_row_offset_idx=0,
+                end_row_offset_idx=1,
+                start_col_offset_idx=0,
+                end_col_offset_idx=1,
+                column_header=True,
+            )
+            doc.add_table(
+                data=TableData(num_rows=1, num_cols=1, table_cells=[cell]),
+                parent=heading,
+                prov=prov(1, 720),
+            )
+        doc.add_text(label=DocItemLabel.TEXT, text=body, parent=heading, prov=prov(1, 700))
+    return doc.model_dump_json()
+
+
+def _leads(document_json: str) -> list[str]:
+    return [u.lead for u in index_of(document_json).units]
+
+
+def test_a_section_carries_its_opening_sentence() -> None:
+    """What "Article 2" hides and the first line says for free."""
+    leads = _leads(
+        _articles(
+            "Le present marche a pour objet la fourniture de prestations de nettoyage.",
+            "La responsabilite du titulaire est limitee a 500 000 euros par sinistre.",
+        )
+    )
+
+    assert leads[1].startswith("La responsabilite du titulaire est limitee a 500 000 euros")
+
+
+def test_the_lead_stops_on_a_sentence_boundary() -> None:
+    leads = _leads(
+        _articles(
+            "Le marche porte sur le nettoyage. Il court sur trois ans. "
+            "Le titulaire est designe a l'acte d'engagement et ne peut ceder ses "
+            "droits sans accord ecrit prealable du pouvoir adjudicateur.",
+            "Les litiges relevent du tribunal administratif de Nancy.",
+        )
+    )
+
+    assert leads[0] == "Le marche porte sur le nettoyage. Il court sur trois ans."
+
+
+def test_a_boilerplate_opening_is_dropped_rather_than_shown() -> None:
+    """Five sections opening the same way describe nothing and cost budget.
+    Saying nothing is better than saying it five times."""
+    same = "Le present article a pour objet de definir les conditions applicables aux parties."
+
+    assert _leads(_articles(*[same] * 5)) == [""] * 5
+
+
+def test_an_opening_that_only_restates_its_heading_is_dropped() -> None:
+    """The heading is already printed on the line above."""
+    leads = _leads(
+        _articles(
+            "Article 1.",
+            "Les litiges relevent du tribunal administratif de Nancy.",
+        )
+    )
+
+    assert leads[0] == ""
+    assert leads[1].startswith("Les litiges")
+
+
+def test_a_section_opening_on_a_table_leads_with_its_prose() -> None:
+    """A serialized table quoted as an opening line reads as `<table><tr>…`."""
+    leads = _leads(
+        _articles(
+            "Le bareme figure ci-dessus et s'applique a compter du 1er janvier.",
+            "Les litiges relevent du tribunal administratif de Nancy.",
+            table_first=True,
+        )
+    )
+
+    assert leads[0] == "Le bareme figure ci-dessus et s'applique a compter du 1er janvier."
+
+
+def test_pages_get_no_lead(headless_json: str) -> None:
+    """A page unit's title is already its opening text."""
+    index = index_of(headless_json)
+
+    assert index.kind is UnitKind.PAGE
+    assert all(u.lead == "" for u in index.units)
 
 
 @pytest.mark.parametrize("payload", ["not json at all", "[]", '"a string"'])

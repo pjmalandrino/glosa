@@ -96,3 +96,63 @@ def test_a_map_that_fits_is_complete() -> None:
 
     assert outline.complete is True
     assert outline.refs == {u.ref for u in index.units}
+
+
+# -- leads ---------------------------------------------------------------------
+
+
+def _numbered_json(sections: int) -> str:
+    """Headings that name nothing — the case the lead exists for."""
+    doc = DoclingDocument(name="marche")
+    pages(doc, 1)
+    for i in range(sections):
+        heading = doc.add_heading(text=f"Article {i + 1}", level=1, prov=prov(1, 740))
+        doc.add_text(
+            label=DocItemLabel.TEXT,
+            text=(
+                f"Cette clause traite du sujet numero {i} et de ses consequences "
+                f"pour la partie concernee, dossier {i}. "
+            )
+            * 3,
+            parent=heading,
+            prov=prov(1, 700),
+        )
+    return doc.model_dump_json()
+
+
+def test_a_numbered_heading_is_described_by_its_own_first_line() -> None:
+    index = index_of(_numbered_json(4))
+    text = render_outline(index.units).text
+
+    assert "Article 1" in text
+    assert "Cette clause traite du sujet numero 0" in text
+
+
+def test_leads_are_dropped_before_sections_are() -> None:
+    """Describing 37 of the sections is worse than listing all 100: the
+    candidate list is restricted to the refs the map showed."""
+    index = index_of(_numbered_json(100))
+    outline = render_outline(index.units, char_budget=6_000)
+
+    assert len(outline.refs) == len(index.units), "every section still listed"
+    assert "↳" not in outline.text, "and the leads paid for it"
+    # Non-vacuous: the same units do carry leads, the budget is what dropped them.
+    assert render_outline(index.units, char_budget=20_000).text.count("↳") == 100
+
+
+def test_leads_survive_a_budget_that_can_afford_them() -> None:
+    index = index_of(_numbered_json(10))
+    outline = render_outline(index.units, char_budget=6_000)
+
+    assert len(outline.refs) == 10
+    assert outline.text.count("↳") == 10
+
+
+def test_a_visited_section_loses_its_lead() -> None:
+    """Its own note is already in the prompt; the opening line repeats it."""
+    index = index_of(_numbered_json(4))
+    first = index.units[0].ref
+    text = render_outline(index.units, visited=[first]).text
+
+    assert "Cette clause traite du sujet numero 0" not in text
+    assert "Cette clause traite du sujet numero 1" in text

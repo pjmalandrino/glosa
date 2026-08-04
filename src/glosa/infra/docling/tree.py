@@ -54,6 +54,12 @@ DEFAULT_LABEL = "TextElement"
 
 SECTION_LABEL = "SectionHeader"
 FURNITURE_LABELS = frozenset({"page_header", "page_footer"})
+PROSE_LABELS = frozenset({"text", "paragraph", "list_item", "inline"})
+"""Labels whose text is running prose, quotable as-is.
+
+Everything else — a table rendered to markup, a picture placeholder, a formula,
+a code block, a caption belonging to a figure rather than to the section — is
+text that reads as noise when lifted out of its context."""
 
 
 def element_label(docling_label: str) -> str:
@@ -70,6 +76,11 @@ def is_inline_group(item: dict[str, Any]) -> bool:
 
 def is_picture(item: dict[str, Any]) -> bool:
     return item_label(item) in {"picture", "chart"}
+
+
+def is_prose(item: dict[str, Any]) -> bool:
+    """True iff this item's text can be quoted as a sentence of the document."""
+    return item_label(item) in PROSE_LABELS
 
 
 def is_section_header(item: dict[str, Any]) -> bool:

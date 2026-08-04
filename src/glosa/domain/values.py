@@ -83,6 +83,12 @@ class Element:
     keywords: tuple[str, ...] = ()
     parent: str | None = None
     is_section: bool = False
+    is_prose: bool = False
+    """True when the text reads as running prose — a paragraph, a list item.
+
+    A table serialized to markup and a picture placeholder are text too, and
+    quoting either as a section's opening line produces `<table><tr>…`. The
+    projector knows the host's labels; the domain only needs the verdict."""
     is_furniture: bool = False
 
 

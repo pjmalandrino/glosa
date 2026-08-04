@@ -163,6 +163,20 @@ class Bm25Index:
         )
         return hits if limit is None else hits[:limit]
 
+    def rare_terms(self, ref: str, *, max_share: float = 0.5) -> frozenset[str]:
+        """Terms of `ref` that at most `max_share` of the corpus also uses.
+
+        The cheap test for "does this entry say anything the others do not".
+        An opening line repeated across every section of a contract has every
+        term at `df = n` and comes back empty; one word of its own is enough to
+        come back non-empty.
+        """
+        counts = self._tf.get(ref)
+        if not counts or self._n == 0:
+            return frozenset()
+        ceiling = max(1, int(self._n * max_share))
+        return frozenset(t for t in counts if self._df.get(t, 0) <= ceiling)
+
     def covered_terms(self, query: str, refs: Sequence[str]) -> frozenset[str]:
         """Query terms that appear in at least one of `refs`."""
         wanted = set(tokenize(query))

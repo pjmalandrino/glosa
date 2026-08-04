@@ -52,6 +52,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+HEDGE_WIDTH = 2
+"""Slots a hedged round needs: the lexical guess *and* the model's own pick.
+
+Reading only one of them is not a hedge, it is the guess it was supposed to
+check."""
+
 
 @dataclass(frozen=True, slots=True)
 class HybridConfig:
@@ -289,7 +295,22 @@ class HybridStrategy:
             picks = [_Pick(c.unit, c.rationale) for c in shortlist.candidates[:width]]
             return picks, expansion
 
-        return await self._hedge(index, query, visited, notes, budget, shortlist, room), expansion
+        hedge_room = self._hedge_room(budget, room)
+        picks = await self._hedge(index, query, visited, notes, budget, shortlist, hedge_room)
+        return picks, expansion
+
+    @staticmethod
+    def _hedge_room(budget: Budget, room: int) -> int:
+        """Slots for a hedged round — `fanout` does not get to cancel the hedge.
+
+        `fanout` is about breadth *when retrieval is confident*. A hedge is the
+        opposite situation, and clamping it to `fanout` broke the one case it
+        exists for: at `fanout = 1` the lexical guess filled the round, the
+        model was never asked, and the trace still said "low-confidence
+        shortlist". Budget still binds — with a single read left there is no
+        second slot to give away.
+        """
+        return min(max(room, HEDGE_WIDTH), budget.steps_left, budget.calls_left)
 
     def _rank(
         self,

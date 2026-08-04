@@ -31,6 +31,7 @@ from glosa.infra.docling.tree import (
     BundledTreeReader,
     dfs_order,
     element_label,
+    is_prose,
     is_section_header,
     item_label,
     iter_pages,
@@ -143,6 +144,7 @@ class DoclingProjection:
                 keywords=keywords,
                 parent=parent_ref(item),
                 is_section=is_section_header(item),
+                is_prose=is_prose(item),
                 is_furniture=_is_furniture(item, label),
             )
             elements.append(element)

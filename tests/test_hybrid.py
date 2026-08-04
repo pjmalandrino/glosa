@@ -437,16 +437,20 @@ async def test_a_spurious_match_no_longer_suppresses_the_model() -> None:
 
 
 async def test_the_expansion_is_written_once_per_run() -> None:
+    index = index_of(_french_contract_json())
+    other = next(u for u in index.units if "Delais" in u.title).ref
     model = FakeChatModel(
         [
             QueryTerms(terms=["plafond", "indemnisation"]),
             Reading(sufficient=False, response="pas le bon endroit"),
+            Selection(reason="voir les delais", ref=other),
             Reading(sufficient=True, response="500 000 euros"),
+            Reading(sufficient=False, response="toujours rien"),
         ]
     )
     config = HybridConfig(direct_char_threshold=0, fanout=1, max_steps=3)
 
-    await HybridStrategy(model, config).run(index_of(_french_contract_json()), PARAPHRASE)
+    await HybridStrategy(model, config).run(index, PARAPHRASE)
 
     schemas = [m[-1].content for m in model.structured_calls]
     written = [c for c in schemas if "most likely to appear" in c]
@@ -474,6 +478,45 @@ async def test_an_expansion_that_does_not_help_falls_through_to_a_hedge() -> Non
     assert trace.steps[1].ref == right
     assert trace.steps[1].reason == "la responsabilite est plafonnee a l'article 7"
     assert trace.status is RunStatus.ANSWERED
+
+
+async def test_a_hedge_consults_the_model_even_at_fanout_one() -> None:
+    """`fanout` caps breadth when retrieval is *confident*. It used to cap the
+    hedge too, so at `fanout=1` the lexical guess filled the round, the model
+    was never asked, and the step still claimed a low-confidence shortlist."""
+    index = index_of(_french_contract_json())
+    right = next(u for u in index.units if "Plafond" in u.title).ref
+    model = FakeChatModel(
+        [
+            Selection(reason="la responsabilite est a l'article 7", ref=right),
+            Reading(sufficient=False, response="rien ici"),
+            Reading(sufficient=True, response="500 000 euros"),
+        ]
+    )
+    config = HybridConfig(direct_char_threshold=0, fanout=1, expand_query=False)
+
+    trace = await HybridStrategy(model, config).run(index, PARAPHRASE)
+
+    assert len(trace.steps) == 2, "the hedge reads both, not just the lexical guess"
+    assert trace.steps[1].ref == right
+    assert trace.status is RunStatus.ANSWERED
+
+
+async def test_a_hedge_still_shrinks_to_the_remaining_budget() -> None:
+    """One read left is one read: the hedge widens past `fanout`, not past the budget."""
+    index = index_of(_french_contract_json())
+    model = FakeChatModel(
+        [
+            Reading(sufficient=False, response="rien"),
+            "Rien de concluant.",
+        ]
+    )
+    config = HybridConfig(direct_char_threshold=0, fanout=1, max_steps=1, expand_query=False)
+
+    trace = await HybridStrategy(model, config).run(index, PARAPHRASE)
+
+    assert len(trace.steps) == 1
+    assert trace.status is RunStatus.BUDGET_EXHAUSTED
 
 
 async def test_expansion_can_be_turned_off() -> None:
