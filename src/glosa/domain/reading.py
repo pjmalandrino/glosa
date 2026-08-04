@@ -359,3 +359,70 @@ def build_trace(
         elapsed_s=round(time.monotonic() - started, 3),
         notes=tuple(note.render() for note in notes),
     )
+
+
+class QueryTerms(BaseModel):
+    """Retrieval vocabulary for one question, written by the model."""
+
+    terms: list[str] = Field(
+        description=(
+            "4 to 8 words or short phrases that would plausibly appear IN THE DOCUMENT "
+            "in the passage answering the question. Use the document's own language and "
+            "register, not a rephrasing of the question."
+        )
+    )
+
+
+MAX_EXPANSION_TERMS = 10
+
+
+async def expand_query(
+    model: ChatModel,
+    *,
+    query: str,
+    titles: Sequence[str],
+    budget: Budget,
+    max_tokens: int | None,
+) -> tuple[str, ...]:
+    """Turn a question into vocabulary the document might actually use.
+
+    A lexical prior fails on paraphrase: the user asks for "le montant maximum
+    que le fournisseur devra rembourser" and the document says "plafond
+    d'indemnisation". Nothing about term matching closes that gap; a model
+    closes it in one short call, and writing vocabulary is a generation task
+    small models are good at — unlike choosing from a long outline.
+
+    The section headings are shown as a register hint. They are often
+    uninformative ("Article 7"), in which case they are simply ignored.
+    """
+    hint = _clip_titles(titles)
+    prompt = (
+        f"Document sections:\n{hint}\n\n"
+        f"Question: {query}\n\n"
+        "List the words and short phrases most likely to appear in the passage "
+        "of this document that answers the question. Write them as the document "
+        "would write them, in its language. Do not rephrase the question."
+    )
+    budget.spend_call()
+    reply = await model.structured(
+        [system(SYSTEM_PROMPT), user(prompt)], schema=QueryTerms, max_tokens=max_tokens
+    )
+    seen: dict[str, None] = {}
+    for term in reply.terms:
+        cleaned = " ".join(str(term).split())
+        if cleaned:
+            seen[cleaned] = None
+    return tuple(seen)[:MAX_EXPANSION_TERMS]
+
+
+def _clip_titles(titles: Sequence[str], limit: int = 600) -> str:
+    lines: list[str] = []
+    used = 0
+    for title in titles:
+        line = f"- {title}"
+        if used + len(line) > limit:
+            lines.append(f"- … ({len(titles) - len(lines)} more)")
+            break
+        lines.append(line)
+        used += len(line) + 1
+    return "\n".join(lines) if lines else "(no headings)"

@@ -23,7 +23,7 @@ chunkless RAG loop:
 | LLM backends           | Ollama only (via `mellea`)        | Ollama, OpenAI-compatible, vLLM, watsonx, LiteLLM  |
 | Structured output      | ` ```json ` block + regex + retry | schema-constrained decoding, repair fallback       |
 | Concurrency            | sync, one section at a time       | async, candidates read in parallel, deadline-bound |
-| Retrieval prior        | none (LLM reads the outline)      | BM25 shortlist, heading/body fused by RRF          |
+| Retrieval prior        | none (LLM reads the outline)      | RRF shortlist + confidence gate + query expansion  |
 | Provenance             | `section_ref` + char count        | graph node ids + page + TOPLEFT bbox per step      |
 | Streaming              | no                                | typed events (SSE-ready)                           |
 | Runtime deps           | `mellea`, `docling-agent`         | `httpx`, `pydantic` — not even `docling-core`      |

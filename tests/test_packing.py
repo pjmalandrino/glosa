@@ -72,9 +72,11 @@ def test_visited_units_are_excluded_from_the_shortlist() -> None:
 
 
 def test_no_lexical_signal_yields_an_empty_shortlist() -> None:
-    """The signal the loop uses to hand the round to the model."""
+    """One of the two signals that hand the round to the model."""
     index = index_of(_sections_json())
-    assert index.ranker.shortlist("cryptocurrency custody") == []
+    shortlist = index.ranker.shortlist("cryptocurrency custody")
+    assert not shortlist
+    assert shortlist.confident(min_coverage=0.0, min_margin=0.0) is False
 
 
 def test_the_ranker_is_built_once_per_document() -> None:
@@ -231,3 +233,103 @@ def test_the_outline_reports_which_refs_it_actually_showed() -> None:
     full = render_outline(index.units)
     assert full.refs == {u.ref for u in index.units}
     assert full.complete is True
+
+
+# --- how much to trust a shortlist --------------------------------------------
+
+
+def _french_contract_json() -> str:
+    """The case that motivated the confidence gate.
+
+    "montant" and "fournisseur" appear in Article 1 and nowhere near the answer,
+    which lives in Article 7 under words the question never uses.
+    """
+    doc = DoclingDocument(name="marche")
+    pages(doc, 1)
+    for title, body in [
+        (
+            "Article 1 — Objet du marche",
+            "Le present marche a pour objet la fourniture de prestations par le "
+            "fournisseur. Le montant global du marche est fixe a l'acte d'engagement. " * 12,
+        ),
+        (
+            "Article 7 — Plafond d'indemnisation",
+            "La responsabilite du titulaire est limitee a 500 000 euros par sinistre. " * 12,
+        ),
+        (
+            "Article 9 — Delais de reglement",
+            "Le paiement intervient dans les trente jours suivant reception. " * 12,
+        ),
+    ]:
+        heading = doc.add_heading(text=title, level=1, prov=prov(1, 740))
+        doc.add_text(label=DocItemLabel.TEXT, text=body, parent=heading, prov=prov(1, 700))
+    return doc.model_dump_json()
+
+
+def test_a_matching_question_produces_a_confident_shortlist() -> None:
+    index = index_of(_french_contract_json())
+    shortlist = index.ranker.shortlist("quel est le plafond d'indemnisation ?")
+
+    assert shortlist.top is not None
+    assert "Plafond" in shortlist.top.unit.title
+    assert shortlist.margin > 1.5
+    assert shortlist.confident(min_coverage=0.34, min_margin=1.15) is True
+
+
+def test_a_spurious_match_produces_a_non_empty_but_untrusted_shortlist() -> None:
+    """This is the bug the gate closes: the list is not empty, so the old
+    `if not candidates` test kept the model out — and the wrong section was
+    read with a confident-sounding rationale."""
+    index = index_of(_french_contract_json())
+    shortlist = index.ranker.shortlist(
+        "quel est le montant maximum que le fournisseur devra rembourser ?"
+    )
+
+    assert shortlist, "a spurious match still fills the list"
+    assert "Objet" in shortlist.candidates[0].unit.title, "and it is the wrong section"
+    assert shortlist.margin < 1.15, "but the ranking is flat — that is the tell"
+    assert shortlist.confident(min_coverage=0.34, min_margin=1.15) is False
+
+
+def test_an_expansion_rescues_the_paraphrase() -> None:
+    """Vocabulary the model supplies, fused as extra views."""
+    index = index_of(_french_contract_json())
+    question = "quel est le montant maximum que le fournisseur devra rembourser ?"
+    rescued = index.ranker.shortlist(
+        question, expansion=["plafond", "indemnisation", "responsabilite", "sinistre"]
+    )
+
+    assert rescued.top is not None
+    assert "Plafond" in rescued.top.unit.title
+    assert rescued.confident(min_coverage=0.34, min_margin=1.15) is True
+    assert any(name.endswith("+") for name, _ in rescued.top.ranks)
+
+
+def test_an_expansion_cannot_displace_what_the_users_own_words_found() -> None:
+    """A bad expansion may add candidates; it must not overrule a good match."""
+    index = index_of(_french_contract_json())
+    question = "quel est le plafond d'indemnisation ?"
+    plain = index.ranker.shortlist(question)
+    noisy = index.ranker.shortlist(question, expansion=["reglement", "paiement", "jours"])
+
+    assert plain.top is not None and noisy.top is not None
+    assert noisy.top.unit.ref == plain.top.unit.ref
+
+
+def test_coverage_ignores_words_the_document_never_uses() -> None:
+    """Counting them would punish every candidate equally and measure nothing."""
+    index = index_of(_french_contract_json())
+    body = index.ranker.body
+    ref = index.units[1].ref
+
+    assert body.coverage("plafond indemnisation cryptomonnaie", [ref]) == 1.0
+    assert body.coverage("plafond reglement", [ref]) == 0.5
+
+
+def test_the_expansion_weight_stays_inside_its_guarantee() -> None:
+    """The property is arithmetic, so pin it: all three expansion views together
+    must contribute less than one original view at rank 1."""
+    from glosa.domain.rank import EXPANSION_WEIGHT, RRF_K, SUMMARY_WEIGHT, UNIT_SCORE
+
+    expansion_ceiling = (1.0 + 1.0 + SUMMARY_WEIGHT) * EXPANSION_WEIGHT / (RRF_K + 1)
+    assert expansion_ceiling < UNIT_SCORE

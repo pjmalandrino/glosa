@@ -8,14 +8,31 @@ from docling_core.types.doc import DocItemLabel, DoclingDocument
 
 from glosa.domain.hybrid import HybridConfig, HybridStrategy
 from glosa.domain.navigate import NavigateConfig, NavigateStrategy
-from glosa.domain.reading import Reading, Selection
+from glosa.domain.reading import QueryTerms, Reading, Selection
 from glosa.domain.values import RunStatus
 from tests.conftest import FakeChatModel, index_of, pages, prov
 
 WIDE = 1_000.0
 """A decisiveness threshold nothing reaches, so fanout is purely the config."""
 
-LOOP = HybridConfig(direct_char_threshold=0)
+
+def cfg(**overrides: object) -> HybridConfig:
+    """Loop config with the confidence gate disabled.
+
+    Tests about parallelism, budgets or outcomes should not also be testing
+    whether retrieval felt sure. The gate has its own tests further down.
+    """
+    base: dict[str, object] = {
+        "direct_char_threshold": 0,
+        "min_margin": 0.0,
+        "min_coverage": 0.0,
+        "expand_query": False,
+    }
+    base.update(overrides)
+    return HybridConfig(**base)  # type: ignore[arg-type]
+
+
+LOOP = cfg()
 
 
 def _contract_json(*, filler: int = 40) -> str:
@@ -47,7 +64,7 @@ async def test_retrieval_picks_the_right_section_without_spending_a_call() -> No
     """One call per unit read, versus two when the model also has to choose."""
     document_json = _contract_json()
     model = FakeChatModel([Reading(sufficient=True, response="2% per week, capped at 10%.")])
-    config = HybridConfig(direct_char_threshold=0, fanout=1)
+    config = cfg(fanout=1)
 
     trace = await HybridStrategy(model, config).run(
         index_of(document_json), "late delivery penalty"
@@ -107,7 +124,7 @@ async def test_candidates_are_read_concurrently() -> None:
             "Nothing conclusive.",
         ]
     )
-    config = HybridConfig(direct_char_threshold=0, fanout=3, max_steps=3, decisive_ratio=WIDE)
+    config = cfg(fanout=3, max_steps=3, decisive_ratio=WIDE)
     await HybridStrategy(model, config).run(index_of(document_json), "works delivery invoices")
 
     assert peak == 3, f"expected three concurrent reads, saw {peak}"
@@ -132,7 +149,7 @@ async def test_steps_follow_retrieval_order_not_completion_order() -> None:
             "Nothing conclusive.",
         ]
     )
-    config = HybridConfig(direct_char_threshold=0, fanout=3, max_steps=3, decisive_ratio=WIDE)
+    config = cfg(fanout=3, max_steps=3, decisive_ratio=WIDE)
     trace = await HybridStrategy(model, config).run(
         index_of(document_json), "works delivery invoices"
     )
@@ -149,7 +166,7 @@ async def test_the_best_ranked_unit_wins_a_tie() -> None:
             Reading(sufficient=True, response="from the runner-up"),
         ]
     )
-    config = HybridConfig(direct_char_threshold=0, fanout=2, decisive_ratio=WIDE)
+    config = cfg(fanout=2, decisive_ratio=WIDE)
     trace = await HybridStrategy(model, config).run(index_of(document_json), "delivery invoices")
 
     assert trace.answer == "from the top-ranked section"
@@ -169,7 +186,7 @@ async def test_a_paraphrased_question_falls_back_to_model_navigation() -> None:
             Reading(sufficient=True, response="2% per week."),
         ]
     )
-    config = HybridConfig(direct_char_threshold=0, fanout=3)
+    config = cfg(fanout=3)
 
     trace = await HybridStrategy(model, config).run(
         index_of(document_json), "quelles sanctions en cas de retard"
@@ -188,7 +205,7 @@ async def test_a_model_fallback_that_misfires_is_recorded_as_such() -> None:
             Reading(sufficient=True, response="ok"),
         ]
     )
-    config = HybridConfig(direct_char_threshold=0, fanout=3)
+    config = cfg(fanout=3)
     trace = await HybridStrategy(model, config).run(
         index_of(document_json), "zzz unrelated vocabulary"
     )
@@ -208,7 +225,7 @@ async def test_two_absent_votes_end_the_run_honestly() -> None:
             "This document does not discuss cats.",
         ]
     )
-    config = HybridConfig(direct_char_threshold=0, fanout=2, decisive_ratio=WIDE)
+    config = cfg(fanout=2, decisive_ratio=WIDE)
     trace = await HybridStrategy(model, config).run(
         index_of(document_json), "works delivery invoices"
     )
@@ -225,7 +242,7 @@ async def test_the_batch_shrinks_to_the_remaining_budget() -> None:
             "Nothing conclusive.",
         ]
     )
-    config = HybridConfig(direct_char_threshold=0, fanout=3, max_steps=2, decisive_ratio=WIDE)
+    config = cfg(fanout=3, max_steps=2, decisive_ratio=WIDE)
     trace = await HybridStrategy(model, config).run(
         index_of(document_json), "works delivery invoices"
     )
@@ -242,7 +259,7 @@ async def test_one_failing_read_does_not_lose_the_round() -> None:
             Reading(sufficient=True, response="survived"),
         ]
     )
-    config = HybridConfig(direct_char_threshold=0, fanout=2, decisive_ratio=WIDE)
+    config = cfg(fanout=2, decisive_ratio=WIDE)
     trace = await HybridStrategy(model, config).run(index_of(document_json), "delivery invoices")
 
     assert trace.status is RunStatus.ANSWERED
@@ -253,7 +270,7 @@ async def test_one_failing_read_does_not_lose_the_round() -> None:
 async def test_a_whole_round_failing_surfaces_the_error() -> None:
     document_json = _contract_json()
     model = FakeChatModel([RuntimeError("backend down"), RuntimeError("still down")])
-    config = HybridConfig(direct_char_threshold=0, fanout=2, decisive_ratio=WIDE)
+    config = cfg(fanout=2, decisive_ratio=WIDE)
 
     try:
         await HybridStrategy(model, config).run(index_of(document_json), "delivery invoices")
@@ -265,7 +282,9 @@ async def test_a_whole_round_failing_surfaces_the_error() -> None:
 
 async def test_a_short_document_still_takes_the_cheap_path(flat_json: str) -> None:
     model = FakeChatModel([Reading(sufficient=True, response="12.4M EUR.")])
-    trace = await HybridStrategy(model).run(index_of(flat_json), "revenue?")
+    trace = await HybridStrategy(model, cfg(direct_char_threshold=6_000)).run(
+        index_of(flat_json), "revenue?"
+    )
 
     assert trace.llm_calls == 1
     assert len(trace.steps) == 1
@@ -285,7 +304,7 @@ async def test_a_decisive_shortlist_is_read_alone() -> None:
     wins, spending three calls to confirm it is waste."""
     document_json = _contract_json()
     model = FakeChatModel([Reading(sufficient=True, response="2% per week.")])
-    config = HybridConfig(direct_char_threshold=0, fanout=3, decisive_ratio=1.0)
+    config = cfg(fanout=3, decisive_ratio=1.0)
 
     trace = await HybridStrategy(model, config).run(
         index_of(document_json), "late delivery penalty"
@@ -305,7 +324,7 @@ async def test_a_flat_shortlist_is_read_broadly() -> None:
             "Nothing conclusive.",
         ]
     )
-    config = HybridConfig(direct_char_threshold=0, fanout=3, max_steps=3, decisive_ratio=WIDE)
+    config = cfg(fanout=3, max_steps=3, decisive_ratio=WIDE)
 
     trace = await HybridStrategy(model, config).run(
         index_of(document_json), "works delivery invoices"
@@ -324,7 +343,7 @@ async def test_the_second_round_searches_for_what_is_missing() -> None:
             Reading(sufficient=True, response="Payable within 30 days."),
         ]
     )
-    config = HybridConfig(direct_char_threshold=0, fanout=1, decisive_ratio=WIDE)
+    config = cfg(fanout=1, decisive_ratio=WIDE)
 
     trace = await HybridStrategy(model, config).run(index_of(document_json), "works")
 
@@ -344,8 +363,133 @@ async def test_retrieval_stands_aside_once_every_query_term_has_been_read() -> N
             Reading(sufficient=True, response="30 days."),
         ]
     )
-    config = HybridConfig(direct_char_threshold=0, fanout=1, decisive_ratio=WIDE, gap_notes=0)
+    config = cfg(fanout=1, decisive_ratio=WIDE, gap_notes=0)
 
     trace = await HybridStrategy(model, config).run(index_of(document_json), "liquidated damages")
 
     assert trace.steps[1].reason == "structure suggests invoicing"
+
+
+# -- the confidence gate and query expansion ----------------------------------
+
+
+def _french_contract_json() -> str:
+    """ "montant" and "fournisseur" live in Article 1; the answer lives in
+    Article 7 under words the question never uses."""
+    doc = DoclingDocument(name="marche")
+    pages(doc, 1)
+    for title, body in [
+        (
+            "Article 1 — Objet du marche",
+            "Le present marche a pour objet la fourniture de prestations par le "
+            "fournisseur. Le montant global est fixe a l'acte d'engagement. " * 12,
+        ),
+        (
+            "Article 7 — Plafond d'indemnisation",
+            "La responsabilite du titulaire est limitee a 500 000 euros par sinistre. " * 12,
+        ),
+        (
+            "Article 9 — Delais de reglement",
+            "Le paiement intervient dans les trente jours suivant reception. " * 12,
+        ),
+    ]:
+        heading = doc.add_heading(text=title, level=1, prov=prov(1, 740))
+        doc.add_text(label=DocItemLabel.TEXT, text=body, parent=heading, prov=prov(1, 700))
+    return doc.model_dump_json()
+
+
+GATED = HybridConfig(direct_char_threshold=0, fanout=3)
+"""Defaults: the gate and the expansion are both on."""
+
+PARAPHRASE = "quel est le montant maximum que le fournisseur devra rembourser ?"
+
+
+async def test_a_confident_shortlist_costs_one_call_and_nothing_else() -> None:
+    """No expansion, no selection: retrieval was sure and it was right."""
+    model = FakeChatModel([Reading(sufficient=True, response="500 000 euros")])
+
+    trace = await HybridStrategy(model, GATED).run(
+        index_of(_french_contract_json()), "quel est le plafond d'indemnisation ?"
+    )
+
+    assert trace.llm_calls == 1
+    assert "Plafond" in trace.steps[0].title
+
+
+async def test_a_spurious_match_no_longer_suppresses_the_model() -> None:
+    """The bug: the shortlist was non-empty and wrong, so the fallback never
+    fired and Article 1 was read with a confident-sounding rationale."""
+    model = FakeChatModel(
+        [
+            QueryTerms(terms=["plafond", "indemnisation", "responsabilite", "sinistre"]),
+            Reading(sufficient=True, response="500 000 euros par sinistre."),
+            Reading(sufficient=False, response="rien"),
+            Reading(sufficient=False, response="rien non plus"),
+        ]
+    )
+
+    trace = await HybridStrategy(model, GATED).run(index_of(_french_contract_json()), PARAPHRASE)
+
+    assert "Plafond" in trace.steps[0].title, "the expansion rescued the paraphrase"
+    assert "text+" in trace.steps[0].reason, "and the trace says the expansion is why"
+    prompts = [m[-1].content for m in model.structured_calls]
+    assert not any("exactly one of" in p for p in prompts), "no selection call was needed"
+
+
+async def test_the_expansion_is_written_once_per_run() -> None:
+    model = FakeChatModel(
+        [
+            QueryTerms(terms=["plafond", "indemnisation"]),
+            Reading(sufficient=False, response="pas le bon endroit"),
+            Reading(sufficient=True, response="500 000 euros"),
+        ]
+    )
+    config = HybridConfig(direct_char_threshold=0, fanout=1, max_steps=3)
+
+    await HybridStrategy(model, config).run(index_of(_french_contract_json()), PARAPHRASE)
+
+    schemas = [m[-1].content for m in model.structured_calls]
+    written = [c for c in schemas if "most likely to appear" in c]
+    assert len(written) == 1
+
+
+async def test_an_expansion_that_does_not_help_falls_through_to_a_hedge() -> None:
+    """Both readings happen in one parallel round: the lexical guess and the
+    model's own pick, rather than committing to either."""
+    index = index_of(_french_contract_json())
+    right = next(u for u in index.units if "Plafond" in u.title).ref
+    model = FakeChatModel(
+        [
+            QueryTerms(terms=["zzz"]),
+            Selection(reason="la responsabilite est plafonnee a l'article 7", ref=right),
+            Reading(sufficient=False, response="rien ici"),
+            Reading(sufficient=True, response="500 000 euros"),
+        ]
+    )
+
+    trace = await HybridStrategy(model, GATED).run(index, PARAPHRASE)
+
+    assert len(trace.steps) == 2
+    assert "low-confidence shortlist" in trace.steps[0].reason
+    assert trace.steps[1].ref == right
+    assert trace.steps[1].reason == "la responsabilite est plafonnee a l'article 7"
+    assert trace.status is RunStatus.ANSWERED
+
+
+async def test_expansion_can_be_turned_off() -> None:
+    """Then a low-confidence shortlist goes straight to the hedge."""
+    index = index_of(_french_contract_json())
+    right = next(u for u in index.units if "Plafond" in u.title).ref
+    model = FakeChatModel(
+        [
+            Selection(reason="article 7", ref=right),
+            Reading(sufficient=False, response="rien"),
+            Reading(sufficient=True, response="500 000 euros"),
+        ]
+    )
+    config = HybridConfig(direct_char_threshold=0, fanout=3, expand_query=False)
+
+    trace = await HybridStrategy(model, config).run(index, PARAPHRASE)
+
+    assert len(trace.steps) == 2
+    assert trace.steps[1].ref == right

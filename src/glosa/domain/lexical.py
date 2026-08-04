@@ -173,5 +173,23 @@ class Bm25Index:
 
     def missing_terms(self, query: str, refs: Sequence[str]) -> frozenset[str]:
         """Query terms nothing in `refs` mentions — a cheap "keep looking" signal."""
-        wanted = {t for t in tokenize(query) if self._df.get(t, 0) > 0}
-        return frozenset(wanted - self.covered_terms(query, refs))
+        return frozenset(self._answerable(query) - self.covered_terms(query, refs))
+
+    def coverage(self, query: str, refs: Sequence[str]) -> float:
+        """Share of the *answerable* query terms that `refs` actually contain.
+
+        Answerable means "present somewhere in this document": a word the
+        document never uses says nothing about how well a section matches, so
+        counting it would punish every candidate equally and measure nothing.
+
+        Returns 1.0 when the question shares no vocabulary with the document at
+        all — there is nothing to be covered, and the caller decides what to do
+        with a shortlist built on nothing.
+        """
+        answerable = self._answerable(query)
+        if not answerable:
+            return 1.0
+        return len(self.covered_terms(query, refs)) / len(answerable)
+
+    def _answerable(self, query: str) -> set[str]:
+        return {t for t in tokenize(query) if self._df.get(t, 0) > 0}

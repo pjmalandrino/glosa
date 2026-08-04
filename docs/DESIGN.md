@@ -242,10 +242,11 @@ glosa/
     values.py           Element, Scope, Span, Excerpt, Step, Trace, RunStatus
     index.py            DocIndex — units, excerpts, budgets over a projection
     outline.py          budget-aware outline rendering
-    lexical.py          ✅ BM25 over projected elements — no dependency
-    rank.py             ✅ UnitRanker: heading/body fusion by reciprocal rank
+    lexical.py          ✅ BM25 + inflection folding + term coverage
+    rank.py             ✅ UnitRanker / Shortlist: RRF over heading, body,
+                           summary and their model-written expansions
     reading.py          ✅ shared vocabulary: prompts, schemas, the three calls
-    hybrid.py           ✅ default strategy: retrieve → read in parallel → confirm
+    hybrid.py           ✅ default strategy: trust → expand → hedge → read
     navigate.py         ✅ model-driven navigation; the fallback when retrieval is dry
     budget.py           ✅ step / call / wall-clock budget, deadline
     errors.py
