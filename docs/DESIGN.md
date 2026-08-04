@@ -230,6 +230,9 @@ Read from `docling_agent/agent/rag.py` @ `main` and Studio's adapter.
 
 ## 5. Architecture
 
+> Diagrams: [`architecture.drawio`](architecture.drawio) — page 1 is this
+> layering, page 2 is the flow of one question, page 3 is the projection.
+
 Hexagonal, same discipline as Studio. Four layers, dependencies pointing inward
 only:
 
