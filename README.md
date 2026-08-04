@@ -76,8 +76,9 @@ import graph and fails if a dependency points outward — `json.loads` lives in
 
 - [`docs/DESIGN.md`](docs/DESIGN.md) — design, phased plan, what we do differently
 - [`docs/INTEGRATION.md`](docs/INTEGRATION.md) — dropping glosa into Docling Studio
-- [`docs/architecture.drawio`](docs/architecture.drawio) — three diagrams: the layering,
-  the flow of one question, and how a `document_json` becomes reading units
+- [`docs/architecture.drawio`](docs/architecture.drawio) — four diagrams: the layering,
+  the flow of one question, how a `document_json` becomes reading units, and the
+  same question run through `docling-agent`, PageIndex and glosa side by side
   (open with [diagrams.net](https://app.diagrams.net) or the VS Code extension)
 
 ## Status
