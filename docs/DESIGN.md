@@ -289,76 +289,79 @@ whatever comes after — without the reading logic noticing.
 
 **The same object as the UI**
 
-0. **glosa reads what Studio shows** (§2): same nodes, same ids, same reading
+0. ✅ **glosa reads what Studio shows** (§2): same nodes, same ids, same reading
    order, same section scoping. Upstream reads docling-core's raw tree, so its
    `section_ref` can name a node the graph does not have and its sections are
    not the ones the viewer draws. On top of the anchor ref, every step carries
    `node_ids` — the exact set of graph nodes it read — so the overlay never has
    to re-derive membership and disagree with the trace.
 
+✅ shipped · ◻︎ planned. The list is what glosa is *for*; the markers keep it
+from reading as what glosa *is*.
+
 **Robustness**
 
-1. **Schema-constrained decoding** — Ollama `format: <json-schema>`, OpenAI
+1. ✅ **Schema-constrained decoding** — Ollama `format: <json-schema>`, OpenAI
    `response_format: json_schema`, llama.cpp GBNF. The `find_json_dicts[0]`
    failure class disappears. When a backend has no constrained mode, a repair
    prompt runs before erroring, and we still raise a `ReasoningParseError`-shaped
    exception so Studio's 502 path is preserved.
-2. **Provider-agnostic** — closes the TODO written into Studio's own
+2. ✅ **Provider-agnostic** — closes the TODO written into Studio's own
    `LLMProviderType` enum ("today only OLLAMA is realizable"). `LLM_PROVIDER_TYPE`
    becomes a real knob: `ollama | openai | vllm | watsonx | litellm`.
-3. **Stable public API** — no private methods, semver, contract tests. Studio
+3. ✅ **Stable public API** — no private methods, semver, contract tests. Studio
    stops tracking upstream constructor changes.
-4. **Deps**: `docling-core` + `httpx` + `pydantic`. No `mellea`, no `torch`.
+4. ✅ **Deps**: `docling-core` + `httpx` + `pydantic`. No `mellea`, no `torch`.
    Studio's 270 MB remote-conversion image stays 270 MB.
 
 **Quality of answers**
 
-5. **Retrieval prior before LLM navigation.** BM25 costs microseconds and cuts
+5. ✅ **Retrieval prior before LLM navigation.** BM25 costs microseconds and cuts
    the search space before the first token is spent. Fixes the
    "outline-too-big" failure and typically removes 1–3 hops.
-6. **Abstention as a first-class outcome.** `status: answered |
+6. ✅ **Abstention as a first-class outcome.** `status: answered |
    not_in_document | insufficient_evidence | budget_exhausted` instead of a
    boolean `converged` that conflates all four. Studio can render "this
    document does not answer that" honestly.
-7. **Grounding verification.** Every answer sentence must align to an evidence
+7. ◻︎ **Grounding verification.** Every answer sentence must align to an evidence
    span; a `groundedness` score (0–1) ships in the trace. This is the single
    biggest credibility win for a product whose selling point is *watching* the
    agent read.
-8. **Span-level provenance.** `self_ref` + charspan + page + TOPLEFT bbox per
+8. ✅ **Span-level provenance.** `self_ref` + charspan + page + TOPLEFT bbox per
    claim, computed with the same conventions as Studio's `infra/bbox.py`. The
    viewer can highlight the exact sentence, not the whole section.
-9. **Structure-aware reading.** Tables serialized as HTML (not flattened),
+9. ✅ **Structure-aware reading.** Tables serialized as HTML (not flattened),
    captions and footnotes pulled with their figure, list items kept with their
    parent — all available from `DoclingDocument` and currently ignored outside
    page mode.
-10. **Real heading-less handling.** Page/layout segmentation instead of
+10. ✅ **Real heading-less handling.** Page/layout segmentation instead of
     returning the whole document as the answer.
-11. **Multi-document with a shared budget** and per-claim document attribution,
+11. ◻︎ **Multi-document with a shared budget** and per-claim document attribution,
     instead of N loops plus a synthesis prompt.
 
 **Speed & cost**
 
-12. **Parallel frontier** — k candidates read concurrently. Latency becomes
+12. ✅ **Parallel frontier** — k candidates read concurrently. Latency becomes
     ~2 round-trips instead of ~10 sequential ones.
-13. **Flat context** — notes-based memory keeps per-call prompts roughly
+13. ✅ **Flat context** — notes-based memory keeps per-call prompts roughly
     constant; token cost grows linearly in hops, not quadratically.
-14. **Caching** — `DocIndex`, outline, and per-node summaries cached by
+14. ✅ **Caching** — `DocIndex`, outline, and per-node summaries cached by
     document hash; Studio queries the same document repeatedly, so the second
     question is materially cheaper.
-15. **Budgets & cancellation** — `max_tokens`, `max_steps`, `deadline`;
+15. ✅ **Budgets & cancellation** — `max_tokens`, `max_steps`, `deadline`;
     `asyncio` cancellation propagates. A user closing the panel actually stops
     the run.
 
 **Observability**
 
-16. **Typed event stream** — `step.started`, `node.read`, `note.added`,
+16. ◻︎ **Typed event stream** — `step.started`, `node.read`, `note.added`,
     `answer.delta`, `run.finished`. Ready for the SSE plan already noted in
     Studio's `api/reasoning.py` ("no streaming at this step, see design doc §7").
-17. **Deterministic replay** — seeded, journaled prompts/responses;
+17. ◻︎ **Deterministic replay** — seeded, journaled prompts/responses;
     `glosa replay run.json` reproduces a trace offline. Directly serves
     Studio's debugging mission.
-18. **No stdout from library code** — structured logging + OpenTelemetry spans.
-19. **Eval harness** — retrieval hit-rate@k, groundedness, abstention accuracy,
+18. ✅ **No stdout from library code** — structured logging + OpenTelemetry spans.
+19. ◻︎ **Eval harness** — retrieval hit-rate@k, groundedness, abstention accuracy,
     p50/p95 latency, tokens/answer. Every phase below has a number attached.
 
 ---
