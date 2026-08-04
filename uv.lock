@@ -122,13 +122,13 @@ name = "glosa"
 version = "0.1.0.dev0"
 source = { editable = "." }
 dependencies = [
-    { name = "docling-core" },
     { name = "httpx" },
     { name = "pydantic" },
 ]
 
 [package.dev-dependencies]
 dev = [
+    { name = "docling-core" },
     { name = "mypy" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -137,13 +137,13 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "docling-core", specifier = ">=2.0.0,<3.0.0" },
     { name = "httpx", specifier = ">=0.27.0,<1.0.0" },
     { name = "pydantic", specifier = ">=2.8.0,<3.0.0" },
 ]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "docling-core", specifier = ">=2.0.0,<3.0.0" },
     { name = "mypy", specifier = ">=1.13.0,<2.0.0" },
     { name = "pytest", specifier = ">=8.0.0,<9.0.0" },
     { name = "pytest-asyncio", specifier = ">=0.24.0,<2.0.0" },

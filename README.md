@@ -6,7 +6,11 @@ A grounded document-reading engine for `DoclingDocument`, built to plug into
 
 `glosa` answers questions over a converted document by walking its structure —
 no chunking, no external index required — and returns an **auditable trace**:
-which nodes it read, why, and which spans support each sentence of the answer.
+which nodes it read, why, and where they are on the page.
+
+It navigates the document **as Studio projects it** — the same collapsed nodes,
+the same `elem::` ids, the same reading order, the same section boundaries — so
+a trace step always resolves to a node the viewer already has.
 
 It is a focused alternative to
 [`docling-agent`](https://github.com/docling-project/docling-agent)'s
@@ -14,14 +18,15 @@ chunkless RAG loop:
 
 |                        | `docling-agent` v0.1.x            | `glosa`                                           |
 | ---------------------- | --------------------------------- | ------------------------------------------------- |
+| Document model         | docling-core's raw item tree      | Studio's projection — same nodes, ids, scoping     |
 | Public API for Studio  | none (Studio calls `_rag_loop`)   | stable `ReasoningRunner` contract                  |
 | LLM backends           | Ollama only (via `mellea`)        | Ollama, OpenAI-compatible, vLLM, watsonx, LiteLLM  |
 | Structured output      | ` ```json ` block + regex + retry | schema-constrained decoding, repair fallback       |
 | Concurrency            | sync, blocking                    | async-native, cancellable, deadline-bounded        |
 | Retrieval prior        | none (LLM reads the outline)      | BM25 + optional vectors, fused with LLM ranking    |
-| Provenance             | `section_ref` + char count        | `self_ref` + charspan + page + bbox per claim      |
+| Provenance             | `section_ref` + char count        | graph node ids + page + TOPLEFT bbox per step      |
 | Streaming              | no                                | typed events (SSE-ready)                           |
-| Heavy deps             | `mellea`, `docling-agent`         | `docling-core` only                                |
+| Runtime deps           | `mellea`, `docling-agent`         | `httpx`, `pydantic` — not even `docling-core`      |
 
 **Scope.** `glosa` owns *read / answer / cite / extract*. It does not write,
 edit or enrich documents — `docling-agent` remains the better tool for that.
@@ -44,7 +49,7 @@ runner = GlosaReasoningRunner(
 trace = await runner.run_trace(document_json=doc_json, query="What is the penalty rate?")
 print(trace.status, trace.answer)
 for step in trace.steps:
-    print(step.ref, step.reason, [s.bbox for s in step.spans])
+    print(step.ref, step.reason, step.node_ids)  # graph nodes to highlight
 ```
 
 From the shell:
@@ -66,10 +71,10 @@ Inside Docling Studio, `runner.run(...)` returns Studio's own
 
 ## Status
 
-Alpha. Phases P0–P1 are done: indexing, outline navigation, Ollama and
-OpenAI-compatible backends, schema-constrained decoding, budgets, and the
-Studio-facing runner. Retrieval pre-ranking, parallel reads, evidence spans and
-streaming are next — see the plan.
+Alpha. Phases P0–P1 are done: Studio-aligned document projection, outline
+navigation, Ollama and OpenAI-compatible backends, schema-constrained decoding,
+budgets, and the Studio-facing runner. Retrieval pre-ranking, parallel reads,
+sentence-level evidence and streaming are next — see the plan.
 
 ## Development
 

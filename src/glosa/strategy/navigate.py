@@ -32,7 +32,7 @@ from glosa.document.outline import render_outline
 from glosa.errors import BudgetExhausted
 from glosa.llm.port import Message, system, user
 from glosa.runtime.budget import Budget
-from glosa.types import RunStatus, Span, Step, Trace, UnitKind
+from glosa.types import Excerpt, RunStatus, Span, Step, Trace, UnitKind
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -160,6 +160,7 @@ class NavigateStrategy:
             title=index.title,
             pages=excerpt.pages,
             spans=_spans_of(excerpt),
+            node_ids=excerpt.node_ids,
         )
         return self._trace(query, reading.response, status, (step,), budget, started)
 
@@ -216,6 +217,7 @@ class NavigateStrategy:
                         title=unit.title,
                         pages=excerpt.pages,
                         spans=_spans_of(excerpt),
+                        node_ids=excerpt.node_ids,
                         revisited=revisiting or unit.ref in visited,
                         fallback=fallback,
                     )
@@ -359,11 +361,10 @@ def _render_notes(notes: Sequence[Note]) -> str:
     return "\n".join(note.render() for note in notes) if notes else "(nothing read yet)"
 
 
-def _spans_of(excerpt: object) -> tuple[Span, ...]:
-    parts = getattr(excerpt, "parts", ())
+def _spans_of(excerpt: Excerpt) -> tuple[Span, ...]:
     return tuple(
-        Span(self_ref=p.self_ref, page_no=p.page_no, bbox=p.bbox)
-        for p in parts[:_MAX_SPANS_PER_STEP]
+        Span(self_ref=p.self_ref, node_id=p.node_id, page_no=p.page_no, bbox=p.bbox)
+        for p in excerpt.parts[:_MAX_SPANS_PER_STEP]
     )
 
 

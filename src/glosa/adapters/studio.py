@@ -11,10 +11,12 @@ Wiring, in Studio's `main.py`:
     from glosa import GlosaReasoningRunner, OllamaChatModel
     from domain.ports import ReasoningParseError
     from domain.value_objects import ReasoningIteration, ReasoningResult
+    from infra.docling_tree import DoclingTreeReader
 
     app.state.reasoning_runner = GlosaReasoningRunner(
         model=OllamaChatModel(base_url=settings.ollama_host,
                               model_id=settings.reasoning_model_id),
+        tree_reader=DoclingTreeReader(),
         result_factory=ReasoningResult,
         iteration_factory=ReasoningIteration,
         parse_error_factory=ReasoningParseError,
@@ -35,6 +37,7 @@ from glosa.types import LegacyIteration, LegacyResult
 
 if TYPE_CHECKING:
     from glosa.llm.port import ChatModel
+    from glosa.studio.ports import TreeReader
     from glosa.types import Trace
 
 DEFAULT_CACHE_SIZE = 8
@@ -56,6 +59,12 @@ class GlosaReasoningRunner:
         cache_size: How many parsed documents to keep indexed. Studio asks
             several questions of the same document, and re-parsing it each time
             is pure waste.
+        tree_reader: The host's own `DocumentTreeReader`. Pass Studio's
+            `DoclingTreeReader` so the deployment has a single implementation
+            of the InlineGroup / picture collapse rules; glosa falls back to a
+            bundled mirror of it when omitted.
+        include_furniture: Put running heads and footers in front of the model.
+            Off by default — they are repeated on every page and answer nothing.
         result_factory / iteration_factory: Host types to build the reply with.
         parse_error_factory: Host exception raised when the backend cannot
             produce a parseable structured reply.
@@ -68,6 +77,8 @@ class GlosaReasoningRunner:
         *,
         config: NavigateConfig | None = None,
         cache_size: int = DEFAULT_CACHE_SIZE,
+        tree_reader: TreeReader | None = None,
+        include_furniture: bool = False,
         result_factory: ResultFactory = LegacyResult,
         iteration_factory: IterationFactory = LegacyIteration,
         parse_error_factory: ParseErrorFactory = ReasoningParseError,
@@ -77,6 +88,8 @@ class GlosaReasoningRunner:
         self._config = config or NavigateConfig()
         self._cache: OrderedDict[str, DocIndex] = OrderedDict()
         self._cache_size = max(1, cache_size)
+        self._tree_reader = tree_reader
+        self._include_furniture = include_furniture
         self._result_factory = result_factory
         self._iteration_factory = iteration_factory
         self._parse_error_factory = parse_error_factory
@@ -144,7 +157,11 @@ class GlosaReasoningRunner:
             self._cache.move_to_end(digest)
             return cached
 
-        index = DocIndex.from_json(document_json)
+        index = DocIndex.from_json(
+            document_json,
+            tree_reader=self._tree_reader,
+            include_furniture=self._include_furniture,
+        )
         self._cache[digest] = index
         while len(self._cache) > self._cache_size:
             self._cache.popitem(last=False)

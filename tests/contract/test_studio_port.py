@@ -12,8 +12,6 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
-from docling_core.types.doc import DoclingDocument
-
 from glosa.adapters.studio import GlosaReasoningRunner
 from glosa.strategy.navigate import Reading
 from tests.conftest import FakeChatModel
@@ -49,11 +47,7 @@ def test_is_available_does_no_io() -> None:
     assert GlosaReasoningRunner(FakeChatModel([])).is_available is True
 
 
-async def test_run_accepts_the_ports_keyword_signature(flat_doc: DoclingDocument) -> None:
+async def test_run_accepts_the_ports_keyword_signature(flat_json: str) -> None:
     runner = GlosaReasoningRunner(FakeChatModel([Reading(sufficient=True, response="yes")]))
-    result = await runner.run(
-        document_json=flat_doc.model_dump_json(),
-        query="revenue?",
-        model_id=None,
-    )
+    result = await runner.run(document_json=flat_json, query="revenue?", model_id=None)
     assert result.answer == "yes"

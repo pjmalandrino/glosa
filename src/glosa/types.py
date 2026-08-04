@@ -53,9 +53,14 @@ class UnitKind(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class Span:
-    """A located piece of the source document."""
+    """A located piece of the source document.
+
+    `node_id` is the host's graph id (`elem::<self_ref>`, or `page::<n>`), so a
+    consumer can highlight the node without re-deriving anything.
+    """
 
     self_ref: str
+    node_id: str = ""
     page_no: int | None = None
     char_start: int | None = None
     char_end: int | None = None
@@ -64,17 +69,19 @@ class Span:
 
 @dataclass(frozen=True, slots=True)
 class ExcerptPart:
-    """One serialized item inside an excerpt, kept addressable.
+    """One projected element inside an excerpt, kept addressable.
 
     Excerpts are assembled from parts rather than a flat string so that a later
-    phase can align an answer sentence back to a `self_ref` + bbox without
-    re-walking the document.
+    phase can align an answer sentence back to a node + bbox without re-walking
+    the document.
     """
 
     self_ref: str
+    node_id: str
     text: str
     page_no: int | None = None
     bbox: BBox | None = None
+    graph_label: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +105,11 @@ class Excerpt:
                 seen[part.page_no] = None
         return tuple(seen)
 
+    @property
+    def node_ids(self) -> tuple[str, ...]:
+        """Host graph ids of everything in this excerpt."""
+        return tuple(part.node_id for part in self.parts if part.node_id)
+
 
 @dataclass(frozen=True, slots=True)
 class Step:
@@ -113,6 +125,12 @@ class Step:
     title: str = ""
     pages: tuple[int, ...] = ()
     spans: tuple[Span, ...] = ()
+    node_ids: tuple[str, ...] = ()
+    """Host graph ids actually read at this step — what the UI should light up.
+
+    The legacy `section_ref` names only the anchor; this names the whole set,
+    so no consumer has to re-derive section membership and risk disagreeing
+    with what was really read."""
     revisited: bool = False
     fallback: bool = False
     """True when the model failed to pick a valid ref and glosa chose for it."""

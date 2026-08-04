@@ -14,8 +14,11 @@ dependencies = [
 ]
 ```
 
-`docling-agent` and `mellea` can be dropped. glosa's only additions on top of
-what Studio already installs are `httpx` and `pydantic` — both already present.
+`docling-agent` and `mellea` can be dropped. glosa adds **nothing** to the
+image: its runtime dependencies are `httpx` and `pydantic`, both already in
+`document-parser`. It does not even need `docling-core` — it reads the
+serialized `document_json`, so the library that produced the document is not
+required to read it.
 
 ## 2. Wire-up (`document-parser/main.py`)
 
@@ -27,6 +30,7 @@ from glosa import GlosaReasoningRunner, OllamaChatModel, OpenAIChatModel
 
 from domain.ports import ReasoningParseError
 from domain.value_objects import LLMProviderType, ReasoningIteration, ReasoningResult
+from infra.docling_tree import DoclingTreeReader
 
 
 def _build_chat_model(settings):
@@ -45,6 +49,9 @@ def _build_chat_model(settings):
 if settings.reasoning_enabled:
     app.state.reasoning_runner = GlosaReasoningRunner(
         _build_chat_model(settings),
+        # Studio's own DoclingTreeReader: one implementation of the
+        # InlineGroup / picture collapse rules in the whole deployment.
+        tree_reader=DoclingTreeReader(),
         result_factory=ReasoningResult,
         iteration_factory=ReasoningIteration,
         parse_error_factory=ReasoningParseError,
@@ -95,13 +102,19 @@ GlosaReasoningRunner(
 
 ## 5. What the frontend gains for free
 
-Nothing breaks, and three things improve without a line of Vue changing:
+Nothing breaks, and four things improve without a line of Vue changing:
 
+- **Every `section_ref` resolves.** glosa navigates the projected document —
+  `iter_items` minus `skip_refs`, ordered by `dfs_order` — so a step can never
+  name an InlineGroup style run or a picture-internal label, which are refs the
+  graph does not contain. It reports `#/groups/N` where the UI shows a
+  collapsed paragraph, because that is the node you are looking at.
+- **Sections are the ones the UI draws.** Unit boundaries follow
+  `sectionParenting.ts`: NEXT chain, one `SectionHeader` to the next, no level
+  nesting. Pinned by a contract test that transcribes the TypeScript rule.
 - **Honest non-answers.** A run that ends in `not_in_document` /
   `insufficient_evidence` / `budget_exhausted` returns `converged=False` and an
   answer prefixed with a one-line marker, instead of a confident hallucination.
-- **Real section boundaries on flat documents.** Most converted PDFs are flat;
-  the section a trace step points at is now the actual section.
 - **No more 502 on a formatting slip.** The schema is pushed into the decoder,
   so `ReasoningParseError` now means the backend genuinely cannot comply.
 
@@ -113,9 +126,29 @@ numbers, TOPLEFT bounding boxes and refs for everything read:
 ```python
 trace = await runner.run_trace(document_json=doc_json, query=q)
 for step in trace.steps:
+    step.node_ids          # ('elem::#/texts/4', 'elem::#/groups/1', …)
     for span in step.spans:
-        span.self_ref, span.page_no, span.bbox  # ready for the canvas overlay
+        span.node_id       # the Cytoscape node — select it, no mapping needed
+        span.page_no       # page for the canvas
+        span.bbox          # TOPLEFT (l, t, r, b), or None when unknown
 ```
+
+`step.node_ids` is the set of graph nodes the step actually read. Highlighting
+that set is exact by construction — no need to re-run section parenting on the
+client and hope it agrees. `bbox` is None rather than Studio's `EMPTY_BBOX`
+sentinel when a node has no usable rectangle, so "unknown" stays
+distinguishable from "zero-area"; substitute the sentinel at the wire edge.
 
 `trace.status` is the four-valued outcome; `trace.converged` is the boolean
 projection of it. This is what phase L2 exposes over SSE.
+
+## 7. If you change the projection
+
+`glosa/studio/tree.py` mirrors `infra/docling_tree.py`. If Studio changes a
+collapse rule, a label mapping or the reading order, glosa must follow, and
+`tests/contract/test_studio_tree_parity.py` plus
+`tests/contract/test_studio_section_scoping.py` are what should fail first.
+
+Passing `tree_reader=DoclingTreeReader()` removes half the risk outright: the
+collapse rules then come from Studio at runtime, and only the section-scoping
+rule stays duplicated.

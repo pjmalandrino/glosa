@@ -29,7 +29,64 @@ Name is free on PyPI (`glosa`, checked). Fallback: `docling-glosa`.
 
 ---
 
-## 2. The integration contract
+## 2. The document object
+
+glosa reads **Studio's projection of the document**, not the raw
+`DoclingDocument`. This is the load-bearing decision of the whole design.
+
+Studio does not show what docling-core iterates. `infra/docling_tree.py`
+collapses two things before anything reaches the graph or the canvas
+(Studio issue #197):
+
+* an **InlineGroup** — one `groups[]` entry plus N `texts[]` style runs —
+  becomes a single `Paragraph` node with concatenated text and the union of the
+  runs' provenances. The style runs land in `skip_refs`;
+* a **picture**'s descendants — labels lifted out of a diagram — are dropped,
+  while the picture node stays.
+
+So `#/texts/3` can be a perfectly valid ref in the `DoclingDocument` and **not
+exist** in Studio's graph. An agent that navigates with docling-core's
+`iterate_items` will happily report it, and the overlay will highlight nothing.
+Conversely it will never see `#/groups/N`, which *are* the paragraph nodes the
+user is looking at.
+
+The same applies to section boundaries. The frontend's
+`features/analysis/sectionParenting.ts` scopes a section by walking the **NEXT
+chain**: each `SectionHeader` (which is both `title` and `section_header` after
+`LABEL_MAP`) becomes the current section, and following nodes belong to it.
+There is deliberately no level nesting — an `h2` after an `h1` opens a new
+scope rather than nesting inside it. A reader that built sections from a level
+stack would read one set of nodes and highlight another.
+
+glosa therefore:
+
+| Concern | Source of truth |
+| ------- | --------------- |
+| Which nodes exist | `build_collapse_index` → `iter_items` minus `skip_refs` |
+| Node identity | `elem::<self_ref>` / `page::<n>`, as `infra/docling_graph.py` builds them |
+| Reading order | `dfs_order` — the NEXT chain |
+| Section scope | the `sectionParenting.ts` rule |
+| Element text | inline text concatenated, table as HTML, picture as caption |
+| Provenance | `iter_provs` rows, normalized TOPLEFT as `infra/bbox.py` does |
+
+Two consequences worth stating plainly:
+
+1. **Every ref glosa emits resolves to a node the UI already has.** Pinned by
+   `tests/contract/test_studio_section_scoping.py`, which transcribes the
+   TypeScript rule and asserts glosa's units match it node for node.
+2. **`docling-core` is not a runtime dependency.** glosa reads the serialized
+   JSON, so it never needs the library that produced it — including its table
+   serializer, which is re-implemented from the cell offsets. Runtime deps are
+   `httpx` and `pydantic`. docling-core stays as a *test* dependency, to build
+   realistic fixtures.
+
+The collapse rules live behind a `TreeReader` port that mirrors Studio's
+`DocumentTreeReader`. Pass Studio's own `DoclingTreeReader` and the deployment
+has exactly one implementation; omit it and glosa uses a bundled mirror.
+
+---
+
+## 3. The integration contract
 
 Studio already defines the port. `glosa` targets it exactly — structurally, not
 by importing Studio.
@@ -83,7 +140,7 @@ L1 must land with **zero** frontend changes. That is the acceptance bar.
 
 ---
 
-## 3. What is actually wrong with the current loop
+## 4. What is actually wrong with the current loop
 
 Read from `docling_agent/agent/rag.py` @ `main` and Studio's adapter.
 
@@ -103,83 +160,89 @@ Read from `docling_agent/agent/rag.py` @ `main` and Studio's adapter.
    `report` matches almost anything.
 5. No-heading fallback returns **the entire document markdown as the answer**,
    with `converged=True`. Studio renders that as a successful answer.
+6. It navigates docling-core's raw item tree, which is not the tree Studio
+   projects (§2). Its `section_ref` can name a node the graph does not contain,
+   and its section boundaries are not the ones the UI draws.
 
 **Design**
 
-6. The mellea session is linear and accumulates every section read. "Chunkless"
+7. The mellea session is linear and accumulates every section read. "Chunkless"
    stops being cheap after 3 hops: the context holds all visited section texts.
-7. The full outline is re-injected into every selection prompt. On a
+8. The full outline is re-injected into every selection prompt. On a
    300-section document the outline alone can exceed the window.
-8. Greedy, strictly sequential, one section per iteration, 2 LLM round-trips
+9. Greedy, strictly sequential, one section per iteration, 2 LLM round-trips
    per hop, `max_iterations=5`. Worst case 10 sequential calls; wall-clock is
    the sum, not the max.
-9. `visited` is a hard ban. A section that becomes relevant once you have more
+10. `visited` is a hard ban. A section that becomes relevant once you have more
    context can never be re-read.
-10. `converged` means "the model self-reported `can_answer`". There is no
+11. `converged` means "the model self-reported `can_answer`". There is no
     grounding check, no abstention path, no distinction between *answered*,
     *not in this document*, and *budget exhausted*.
-11. Provenance stops at `section_ref` + `len(text)`. Studio has bbox
+12. Provenance stops at `section_ref` + `len(text)`. Studio has bbox
     infrastructure (`infra/bbox.py`, TOPLEFT normalization, per-page overlay)
     and nothing to point it at below section granularity.
-12. Multi-document = N independent loops, then "synthesize these strings".
+13. Multi-document = N independent loops, then "synthesize these strings".
     No shared budget, no cross-document citation.
 
 **Operational**
 
-13. Sync + `rich.Console` printing from library code; Studio offloads to
+14. Sync + `rich.Console` printing from library code; Studio offloads to
     `asyncio.to_thread` and cannot cancel, time-box, or count tokens.
-14. No caching: outline and summaries are recomputed for every query on a
+15. No caching: outline and summaries are recomputed for every query on a
     document whose `document_json` Studio already has stored.
-15. Constructor churn between versions (`model_id=` → `backend=`) on top of a
+16. Constructor churn between versions (`model_id=` → `backend=`) on top of a
     private-method call site. Every upstream release is a potential break.
-16. No eval harness. There is no number to move.
+17. No eval harness. There is no number to move.
 
 ---
 
-## 4. Architecture
+## 5. Architecture
 
 ```
 glosa/
-  types.py              Span, Evidence, Note, Step, Trace, Answer, Verdict
+  types.py              Span, Excerpt, Step, Trace + the legacy 6-field projection
+  studio/               ← Studio's document object; ✅ shipped
+    tree.py             mirror of infra/docling_tree.py — collapses, dfs_order, labels
+    ports.py            TreeReader (mirrors Studio's DocumentTreeReader)
+    projection.py       Element / Scope / StudioProjection — node ids, order, scoping
+    render.py           element → text: inline concat, table HTML, figure caption
   document/
-    index.py            DocIndex — parse once: node tree, refs, prov, text offsets
-    outline.py          budget-aware outline rendering (level windows, truncation)
-    excerpt.py          subtree / page / table extraction, charspan-tracked
-    prov.py             self_ref → (page_no, bbox, charspan)
-    segment.py          heading-less fallback: layout + page segmentation
-  retrieve/
-    lexical.py          BM25 over node text (vendored, ~80 lines, no dep)
-    vector.py           optional VectorRetriever port (Studio: OpenSearch)
-    structure.py        parent / sibling / caption / footnote expansion
+    index.py            DocIndex — units, excerpts, caches over a projection
+    outline.py          budget-aware outline rendering
+  retrieve/                                                          ← P2
+    lexical.py          BM25 over element text (vendored, no dep)
+    vector.py           VectorRetriever port (Studio: EmbeddingService + OpenSearch)
+    structure.py        caption / footnote / neighbour expansion
     fuse.py             reciprocal-rank fusion + LLM re-rank
-  llm/
+  llm/                  ✅ shipped
     port.py             ChatModel: complete / structured(schema) / stream
-    ollama.py openai.py litellm.py watsonx.py
-    schema.py           constrained decoding + JSON repair fallback
+    base.py             transport, retries, repair round-trip
+    ollama.py openai.py
+    schema.py           strict-schema conversion + JSON extraction
   strategy/
-    base.py             ReadingStrategy → AsyncIterator[Event]
-    direct.py           small doc: single shot, no loop
-    navigate.py         outline navigation, parallel frontier, notes memory
-    hybrid.py           retrieve-then-read (default)
-    router.py           picks a strategy from doc size / structure / query
-  verify/
+    navigate.py         ✅ outline navigation, notes memory, budgets, abstention
+    hybrid.py           retrieve-then-read                            ← P2
+    router.py           picks a strategy from doc size / structure     ← P2
+  verify/                                                            ← P3
     ground.py           sentence → evidence alignment, groundedness score
-    critic.py           optional adversarial pass on unsupported claims
   runtime/
-    budget.py           token / step / wall-clock budget, deadline, cancel
-    events.py           typed event stream
-    cache.py            DocIndex + summary cache keyed by document hash
-    journal.py          full prompt/response journal → deterministic replay
-  adapters/
+    budget.py           ✅ step / call / wall-clock budget, deadline
+    events.py           typed event stream                            ← P3
+    journal.py          prompt/response journal → deterministic replay ← P3
+  adapters/             ✅ shipped
     studio.py           GlosaReasoningRunner (implements Studio's port)
-    legacy.py           RAGIteration-shaped projection of a rich Trace
-  server/app.py         optional standalone sidecar: POST /run, GET /run/{id}/events
-  cli.py                glosa ask | trace | replay | eval
+    legacy.py           six-field projection of a rich Trace
+  server/app.py         standalone SSE sidecar                        ← P3
+  cli.py                ✅ glosa ask | map        (+ replay | eval    ← P5)
 ```
 
-Hexagonal, same discipline as Studio: `strategy/` and `document/` never import
-an LLM SDK or an HTTP client; everything crosses through `llm/port.py` and the
-retriever ports.
+
+Hexagonal, same discipline as Studio. Two rules hold the design together:
+
+* `document/`, `strategy/` and `adapters/` never import an LLM SDK or an HTTP
+  client — everything crosses `llm/port.py`;
+* nothing outside `studio/` interprets Docling's raw shape. Structure comes
+  from `StudioProjection` or it does not come at all.
 
 ### The default loop (`strategy/hybrid.py`)
 
@@ -203,7 +266,16 @@ is what keeps the context flat across hops and makes step 4 reproducible.
 
 ---
 
-## 5. What we do better — the concrete list
+## 6. What we do better — the concrete list
+
+**The same object as the UI**
+
+0. **glosa reads what Studio shows** (§2): same nodes, same ids, same reading
+   order, same section scoping. Upstream reads docling-core's raw tree, so its
+   `section_ref` can name a node the graph does not have and its sections are
+   not the ones the viewer draws. On top of the anchor ref, every step carries
+   `node_ids` — the exact set of graph nodes it read — so the overlay never has
+   to re-derive membership and disagree with the trace.
 
 **Robustness**
 
@@ -272,7 +344,7 @@ is what keeps the context flat across hops and makes step 4 reproducible.
 
 ---
 
-## 6. Phased plan
+## 7. Phased plan
 
 ### P0 — Scaffolding ✅ done
 
@@ -284,21 +356,24 @@ dependency in either direction.
 
 ### P1 — Drop-in replacement ✅ done
 
-Shipped: `DocIndex` (single-pass, real heading levels, page fallback, preamble
-units, per-document render + excerpt caches), budget-aware outline rendering,
-`ChatModel` port with Ollama and OpenAI-compatible adapters, schema-constrained
-decoding with a repair round-trip, `NavigateStrategy` (cheap path for short
-documents, flat notes memory, four-valued outcome, recoverable ref selection,
-step/call/deadline budgets), `GlosaReasoningRunner` with host-type factories,
-and a CLI (`glosa ask` / `glosa map`).
+Shipped: `StudioProjection` over Studio's collapsed document object (§2) behind
+a `TreeReader` port, `DocIndex` (scopes, page fallback, preamble units, render +
+excerpt caches), budget-aware outline rendering, `ChatModel` port with Ollama
+and OpenAI-compatible adapters, schema-constrained decoding with a repair
+round-trip, `NavigateStrategy` (cheap path for short documents, flat notes
+memory, four-valued outcome, recoverable ref selection, step/call/deadline
+budgets), `GlosaReasoningRunner` with host-type factories, and a CLI
+(`glosa ask` / `glosa map`).
 
-64 tests, `mypy --strict` clean. Integration steps are in
-[`INTEGRATION.md`](INTEGRATION.md).
+87 tests, `mypy --strict` clean, no `docling-core` at runtime. Integration steps
+are in [`INTEGRATION.md`](INTEGRATION.md).
 
-*Verified*: the runner satisfies Studio's protocol; iterations expose exactly
-the six legacy fields; host factories return Studio's own dataclasses; parse
-failures surface as the host's exception; a document is parsed once across
-queries.
+*Verified*: section scoping matches the frontend's `computeSectionParents`
+node for node; InlineGroup style runs and picture-internal labels never surface;
+every emitted ref resolves to a projected node; the runner satisfies Studio's
+protocol; iterations expose exactly the six legacy fields; host factories return
+Studio's own dataclasses; parse failures surface as the host's exception; a
+document is parsed once across queries.
 
 *Not yet verified* (needs a running Studio + Ollama): the end-to-end round trip
 against a real backend, and the Vue overlay rendering a glosa trace.
@@ -345,7 +420,7 @@ Total ≈ 3–4 weeks of focused work, with something shippable at the end of P1
 
 ---
 
-## 7. Studio-side changes (minimal by design)
+## 8. Studio-side changes (minimal by design)
 
 | Phase | File | Change |
 | ----- | ---- | ------ |
@@ -362,7 +437,7 @@ one release, selected by `REASONING_RUNNER=docling-agent|glosa`.
 
 ---
 
-## 8. Decisions
+## 9. Decisions
 
 | Question | Decision |
 | -------- | -------- |

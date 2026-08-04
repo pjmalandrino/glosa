@@ -34,7 +34,7 @@ def render_outline(
         return "(empty document)"
 
     seen = frozenset(visited)
-    max_level = max(u.level for u in units)
+    max_level = max(_level(u) for u in units)
 
     # 1. Drop the deepest heading levels until the map fits.
     kept: Sequence[Unit] = units
@@ -43,7 +43,7 @@ def render_outline(
         if len(text) <= char_budget:
             return text
         max_level -= 1
-        deeper = [u for u in units if u.level <= max_level]
+        deeper = [u for u in units if _level(u) <= max_level]
         if len(deeper) < _MIN_KEPT:
             break
         kept = deeper
@@ -88,8 +88,13 @@ def _render_elided(units: Sequence[Unit], visited: frozenset[str], char_budget: 
     return "\n".join([*head, marker, *reversed(tail)])
 
 
+def _level(unit: Unit) -> int:
+    """Heading level for display; unlevelled units sit at the top."""
+    return 0 if unit.level is None else max(0, unit.level)
+
+
 def _line(unit: Unit, visited: frozenset[str]) -> str:
-    indent = "  " * max(0, unit.level)
+    indent = "  " * _level(unit)
     mark = "✓ " if unit.ref in visited else ""
     page = f", p.{unit.page_no}" if unit.page_no is not None else ""
     return (

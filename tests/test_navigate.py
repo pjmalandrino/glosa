@@ -3,54 +3,64 @@
 from __future__ import annotations
 
 from docling_core.types.doc import DocItemLabel, DoclingDocument
-from docling_core.types.doc.base import Size
 
 from glosa.document.index import DocIndex
 from glosa.strategy.navigate import NavigateConfig, NavigateStrategy, Reading, Selection
 from glosa.types import RunStatus, UnitKind
-from tests.conftest import FakeChatModel
+from tests.conftest import FakeChatModel, pages, prov
 
 LOOP = NavigateConfig(direct_char_threshold=0)
 
 
-def _refs(doc: DoclingDocument) -> list[str]:
-    return [u.ref for u in DocIndex(doc).units]
+def _index(document_json: str) -> DocIndex:
+    return DocIndex.from_json(document_json)
 
 
-def _long_doc() -> DoclingDocument:
+def _refs(document_json: str) -> list[str]:
+    return [u.ref for u in _index(document_json).units]
+
+
+def _long_json() -> str:
     """Two sections whose bodies are long and mutually distinctive."""
     doc = DoclingDocument(name="contract")
-    doc.add_page(page_no=1, size=Size(width=612, height=792))
-    scope = doc.add_heading(text="Scope", level=1)
-    doc.add_text(label=DocItemLabel.TEXT, text="SCOPETEXT " * 400, parent=scope)
-    penalties = doc.add_heading(text="Penalties", level=1)
+    pages(doc, 1)
+    scope = doc.add_heading(text="Scope", level=1, prov=prov(1, 740))
+    doc.add_text(label=DocItemLabel.TEXT, text="SCOPETEXT " * 400, parent=scope, prov=prov(1, 700))
+    penalties = doc.add_heading(text="Penalties", level=1, prov=prov(1, 500))
     doc.add_text(
-        label=DocItemLabel.TEXT, text="Late delivery incurs 2% per week.", parent=penalties
+        label=DocItemLabel.TEXT,
+        text="Late delivery incurs 2% per week.",
+        parent=penalties,
+        prov=prov(1, 480),
     )
-    return doc
+    return doc.model_dump_json()
 
 
 # -- the cheap path -----------------------------------------------------------
 
 
-async def test_a_short_document_is_read_in_one_call(flat_doc: DoclingDocument) -> None:
+async def test_a_short_document_is_read_in_one_call(flat_json: str) -> None:
     """No navigation loop for a document that fits — one call, not six."""
     model = FakeChatModel([Reading(sufficient=True, response="12.4M EUR.")])
-    trace = await NavigateStrategy(model).run(DocIndex(flat_doc), "What was revenue?")
+    trace = await NavigateStrategy(model).run(_index(flat_json), "What was revenue?")
 
     assert trace.status is RunStatus.ANSWERED
     assert trace.converged is True
     assert trace.llm_calls == 1
     assert len(trace.steps) == 1
     assert trace.steps[0].kind is UnitKind.DOCUMENT
-    assert trace.steps[0].ref == "#/body"
+    # Anchored on a node the graph actually has, and carrying every node read.
+    step = trace.steps[0]
+    index = _index(flat_json)
+    assert step.ref in {e.self_ref for e in index.projection.elements}
+    assert set(step.node_ids) == set(index.projection.node_ids)
 
 
 # -- the loop -----------------------------------------------------------------
 
 
-async def test_the_loop_converges_and_records_every_hop(flat_doc: DoclingDocument) -> None:
-    refs = _refs(flat_doc)
+async def test_the_loop_converges_and_records_every_hop(flat_json: str) -> None:
+    refs = _refs(flat_json)
     model = FakeChatModel(
         [
             Selection(reason="revenue lives here", ref=refs[1]),
@@ -59,7 +69,7 @@ async def test_the_loop_converges_and_records_every_hop(flat_doc: DoclingDocumen
             Reading(sufficient=True, response="Revenue was 12.4M EUR."),
         ]
     )
-    trace = await NavigateStrategy(model, LOOP).run(DocIndex(flat_doc), "revenue?")
+    trace = await NavigateStrategy(model, LOOP).run(_index(flat_json), "revenue?")
 
     assert trace.status is RunStatus.ANSWERED
     assert trace.answer == "Revenue was 12.4M EUR."
@@ -73,8 +83,8 @@ async def test_context_stays_flat_across_hops() -> None:
     """Upstream keeps one growing session, so every section read stays in
     context and the chunkless saving erodes. Here later prompts carry a short
     note, never the previous section's body."""
-    doc = _long_doc()
-    refs = _refs(doc)
+    document_json = _long_json()
+    refs = _refs(document_json)
     model = FakeChatModel(
         [
             Selection(reason="start at scope", ref=refs[0]),
@@ -83,7 +93,7 @@ async def test_context_stays_flat_across_hops() -> None:
             Reading(sufficient=True, response="2% per week."),
         ]
     )
-    await NavigateStrategy(model, LOOP).run(DocIndex(doc), "penalty rate?")
+    await NavigateStrategy(model, LOOP).run(_index(document_json), "penalty rate?")
 
     first_read = model.structured_calls[1][-1].content
     assert "SCOPETEXT" in first_read, "step 1 must actually show the section"
@@ -95,9 +105,9 @@ async def test_context_stays_flat_across_hops() -> None:
 
 
 async def test_an_invalid_ref_gets_one_corrective_round_trip(
-    flat_doc: DoclingDocument,
+    flat_json: str,
 ) -> None:
-    refs = _refs(flat_doc)
+    refs = _refs(flat_json)
     model = FakeChatModel(
         [
             Selection(reason="guessing", ref="#/texts/999"),
@@ -105,7 +115,7 @@ async def test_an_invalid_ref_gets_one_corrective_round_trip(
             Reading(sufficient=True, response="ok"),
         ]
     )
-    trace = await NavigateStrategy(model, LOOP).run(DocIndex(flat_doc), "q")
+    trace = await NavigateStrategy(model, LOOP).run(_index(flat_json), "q")
 
     assert trace.steps[0].ref == refs[1]
     assert trace.steps[0].fallback is False
@@ -114,7 +124,7 @@ async def test_an_invalid_ref_gets_one_corrective_round_trip(
 
 
 async def test_a_persistently_invalid_ref_falls_back_and_says_so(
-    flat_doc: DoclingDocument,
+    flat_json: str,
 ) -> None:
     """Upstream silently records `reason='fallback'` as if it were a choice."""
     model = FakeChatModel(
@@ -124,15 +134,15 @@ async def test_a_persistently_invalid_ref_falls_back_and_says_so(
             Reading(sufficient=True, response="ok"),
         ]
     )
-    trace = await NavigateStrategy(model, LOOP).run(DocIndex(flat_doc), "q")
+    trace = await NavigateStrategy(model, LOOP).run(_index(flat_json), "q")
 
     assert trace.steps[0].fallback is True
-    assert trace.steps[0].ref in _refs(flat_doc)
+    assert trace.steps[0].ref in _refs(flat_json)
 
 
-async def test_two_absent_votes_end_the_run_honestly(flat_doc: DoclingDocument) -> None:
+async def test_two_absent_votes_end_the_run_honestly(flat_json: str) -> None:
     """`not_in_document` is an outcome, not a failure to converge."""
-    refs = _refs(flat_doc)
+    refs = _refs(flat_json)
     model = FakeChatModel(
         [
             Selection(reason="a", ref=refs[1]),
@@ -142,15 +152,15 @@ async def test_two_absent_votes_end_the_run_honestly(flat_doc: DoclingDocument) 
             "This document does not discuss cats.",
         ]
     )
-    trace = await NavigateStrategy(model, LOOP).run(DocIndex(flat_doc), "cats?")
+    trace = await NavigateStrategy(model, LOOP).run(_index(flat_json), "cats?")
 
     assert trace.status is RunStatus.NOT_IN_DOCUMENT
     assert trace.converged is False
     assert len(trace.steps) == 2
 
 
-async def test_one_absent_vote_is_not_enough(flat_doc: DoclingDocument) -> None:
-    refs = _refs(flat_doc)
+async def test_one_absent_vote_is_not_enough(flat_json: str) -> None:
+    refs = _refs(flat_json)
     model = FakeChatModel(
         [
             Selection(reason="a", ref=refs[1]),
@@ -159,13 +169,13 @@ async def test_one_absent_vote_is_not_enough(flat_doc: DoclingDocument) -> None:
             Reading(sufficient=True, response="Actually, here it is."),
         ]
     )
-    trace = await NavigateStrategy(model, LOOP).run(DocIndex(flat_doc), "q")
+    trace = await NavigateStrategy(model, LOOP).run(_index(flat_json), "q")
     assert trace.status is RunStatus.ANSWERED
 
 
 async def test_running_out_of_steps_with_material_left_is_a_budget_outcome() -> None:
-    doc = _long_doc()
-    refs = _refs(doc)
+    document_json = _long_json()
+    refs = _refs(document_json)
     model = FakeChatModel(
         [
             Selection(reason="a", ref=refs[0]),
@@ -173,16 +183,16 @@ async def test_running_out_of_steps_with_material_left_is_a_budget_outcome() -> 
         ]
     )
     config = NavigateConfig(direct_char_threshold=0, max_steps=1)
-    trace = await NavigateStrategy(model, config).run(DocIndex(doc), "q")
+    trace = await NavigateStrategy(model, config).run(_index(document_json), "q")
 
     assert trace.status is RunStatus.BUDGET_EXHAUSTED
     assert trace.answer == "partial finding"
 
 
 async def test_reading_everything_without_an_answer_is_an_evidence_outcome(
-    flat_doc: DoclingDocument,
+    flat_json: str,
 ) -> None:
-    refs = _refs(flat_doc)
+    refs = _refs(flat_json)
     script: list[object] = []
     for ref in refs:
         script.append(Selection(reason="looking", ref=ref))
@@ -191,7 +201,7 @@ async def test_reading_everything_without_an_answer_is_an_evidence_outcome(
 
     config = NavigateConfig(direct_char_threshold=0, max_steps=len(refs), allow_revisit=False)
     trace = await NavigateStrategy(model := FakeChatModel(script), config).run(
-        DocIndex(flat_doc), "q"
+        _index(flat_json), "q"
     )
 
     assert trace.status is RunStatus.INSUFFICIENT_EVIDENCE
@@ -201,23 +211,23 @@ async def test_reading_everything_without_an_answer_is_an_evidence_outcome(
 
 
 async def test_a_single_note_is_returned_without_an_extra_call() -> None:
-    doc = _long_doc()
+    document_json = _long_json()
     model = FakeChatModel(
         [
-            Selection(reason="a", ref=_refs(doc)[0]),
+            Selection(reason="a", ref=_refs(document_json)[0]),
             Reading(sufficient=False, response="only this"),
         ]
     )
     config = NavigateConfig(direct_char_threshold=0, max_steps=1)
-    trace = await NavigateStrategy(model, config).run(DocIndex(doc), "q")
+    trace = await NavigateStrategy(model, config).run(_index(document_json), "q")
 
     assert trace.answer == "only this"
     assert model.complete_calls == []
 
 
 async def test_the_llm_call_ceiling_stops_the_run() -> None:
-    doc = _long_doc()
-    refs = _refs(doc)
+    document_json = _long_json()
+    refs = _refs(document_json)
     model = FakeChatModel(
         [
             Selection(reason="a", ref=refs[0]),
@@ -226,21 +236,21 @@ async def test_the_llm_call_ceiling_stops_the_run() -> None:
         ]
     )
     config = NavigateConfig(direct_char_threshold=0, max_steps=5, max_llm_calls=3)
-    trace = await NavigateStrategy(model, config).run(DocIndex(doc), "q")
+    trace = await NavigateStrategy(model, config).run(_index(document_json), "q")
 
     assert trace.status is RunStatus.BUDGET_EXHAUSTED
     assert trace.llm_calls <= 3
 
 
-async def test_provenance_travels_with_every_step(flat_doc: DoclingDocument) -> None:
-    refs = _refs(flat_doc)
+async def test_provenance_travels_with_every_step(flat_json: str) -> None:
+    refs = _refs(flat_json)
     model = FakeChatModel(
         [
             Selection(reason="a", ref=refs[1]),
             Reading(sufficient=True, response="done"),
         ]
     )
-    trace = await NavigateStrategy(model, LOOP).run(DocIndex(flat_doc), "q")
+    trace = await NavigateStrategy(model, LOOP).run(_index(flat_json), "q")
 
     step = trace.steps[0]
     assert step.pages == (1,)
@@ -249,7 +259,7 @@ async def test_provenance_travels_with_every_step(flat_doc: DoclingDocument) -> 
 
 
 async def test_an_empty_document_is_reported_not_answered() -> None:
-    doc = DoclingDocument(name="empty")
-    trace = await NavigateStrategy(FakeChatModel([])).run(DocIndex(doc), "q")
+    empty = DoclingDocument(name="empty").model_dump_json()
+    trace = await NavigateStrategy(FakeChatModel([])).run(_index(empty), "q")
     assert trace.status is RunStatus.NOT_IN_DOCUMENT
     assert trace.steps == ()

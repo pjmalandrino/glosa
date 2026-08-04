@@ -3,36 +3,43 @@
 from __future__ import annotations
 
 from docling_core.types.doc import DocItemLabel, DoclingDocument
-from docling_core.types.doc.base import Size
 
 from glosa.document.index import DocIndex
 from glosa.document.outline import render_outline
+from tests.conftest import pages, prov
 
 
-def _big_doc(sections: int, depth_two_per_section: int = 3) -> DoclingDocument:
+def _big_doc_json(sections: int, depth_two_per_section: int = 3) -> str:
     doc = DoclingDocument(name="big")
-    doc.add_page(page_no=1, size=Size(width=612, height=792))
+    pages(doc, 1)
     for i in range(sections):
-        heading = doc.add_heading(text=f"Chapter {i} on regulatory reporting", level=1)
-        doc.add_text(label=DocItemLabel.TEXT, text=f"Body of chapter {i}. " * 20, parent=heading)
+        heading = doc.add_heading(
+            text=f"Chapter {i} on regulatory reporting", level=1, prov=prov(1, 740)
+        )
+        doc.add_text(
+            label=DocItemLabel.TEXT,
+            text=f"Body of chapter {i}. " * 20,
+            parent=heading,
+            prov=prov(1, 700),
+        )
         for j in range(depth_two_per_section):
             sub = doc.add_heading(
                 text=f"Section {i}.{j} detailed provisions", level=2, parent=heading
             )
             doc.add_text(label=DocItemLabel.TEXT, text=f"Detail {i}.{j}. " * 20, parent=sub)
-    return doc
+    return doc.model_dump_json()
 
 
-def test_every_unit_is_listed_with_its_ref(flat_doc: DoclingDocument) -> None:
-    index = DocIndex(flat_doc)
+def test_every_unit_is_listed_with_its_ref(flat_json: str) -> None:
+    index = DocIndex.from_json(flat_json)
     text = render_outline(index.units)
     for unit in index.units:
         assert unit.ref in text
         assert unit.title in text
 
 
-def test_visited_units_are_marked(flat_doc: DoclingDocument) -> None:
-    index = DocIndex(flat_doc)
+def test_visited_units_are_marked(flat_json: str) -> None:
+    index = DocIndex.from_json(flat_json)
     target = index.units[1].ref
     line = next(
         line
@@ -43,7 +50,7 @@ def test_visited_units_are_marked(flat_doc: DoclingDocument) -> None:
 
 
 def test_deepest_levels_are_dropped_before_anything_is_elided() -> None:
-    index = DocIndex(_big_doc(sections=30))
+    index = DocIndex.from_json(_big_doc_json(sections=30))
     text = render_outline(index.units, char_budget=2_000)
     assert len(text) <= 2_000
     assert "Chapter 0" in text
@@ -53,7 +60,7 @@ def test_deepest_levels_are_dropped_before_anything_is_elided() -> None:
 
 def test_elision_is_announced_with_a_count() -> None:
     """A silently shortened map reads as a complete one. It must not."""
-    index = DocIndex(_big_doc(sections=200, depth_two_per_section=0))
+    index = DocIndex.from_json(_big_doc_json(sections=200, depth_two_per_section=0))
     text = render_outline(index.units, char_budget=1_500)
     assert len(text) <= 1_500
     assert "omitted from this map" in text

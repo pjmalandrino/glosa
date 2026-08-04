@@ -1,15 +1,22 @@
-"""Shared fixtures: hand-built documents and a scripted chat model."""
+"""Fixtures.
+
+Documents are built with `docling-core` and handed to glosa as **serialized
+JSON**, which is exactly what Docling Studio stores in
+`AnalysisJob.document_json`. docling-core is a test-only dependency: glosa
+itself never imports it.
+"""
 
 from __future__ import annotations
 
 from typing import Any
 
 import pytest
-from docling_core.types.doc import DocItemLabel, DoclingDocument
+from docling_core.types.doc import DocItemLabel, DoclingDocument, TableCell, TableData
 from docling_core.types.doc.base import BoundingBox, CoordOrigin, Size
 from docling_core.types.doc.document import ProvenanceItem
 from pydantic import BaseModel
 
+from glosa.document.index import DocIndex
 from glosa.llm.port import ChatModel, Message
 
 PAGE_HEIGHT = 792.0
@@ -17,6 +24,7 @@ PAGE_WIDTH = 612.0
 
 
 def prov(page_no: int, top: float = 700.0, length: int = 10) -> ProvenanceItem:
+    """A BOTTOMLEFT provenance — the origin Docling emits for PDFs."""
     return ProvenanceItem(
         page_no=page_no,
         bbox=BoundingBox(l=72.0, t=top, r=540.0, b=top - 14.0, coord_origin=CoordOrigin.BOTTOMLEFT),
@@ -24,16 +32,22 @@ def prov(page_no: int, top: float = 700.0, length: int = 10) -> ProvenanceItem:
     )
 
 
-def _pages(doc: DoclingDocument, count: int) -> None:
+def pages(doc: DoclingDocument, count: int) -> None:
     for page_no in range(1, count + 1):
         doc.add_page(page_no=page_no, size=Size(width=PAGE_WIDTH, height=PAGE_HEIGHT))
 
 
-@pytest.fixture
-def nested_doc() -> DoclingDocument:
+def index_of(document_json: str, **kwargs: Any) -> DocIndex:
+    return DocIndex.from_json(document_json, **kwargs)
+
+
+# --- documents ---------------------------------------------------------------
+
+
+def build_nested() -> DoclingDocument:
     """Headings carry their content as children — the well-formed case."""
     doc = DoclingDocument(name="annual-report")
-    _pages(doc, 2)
+    pages(doc, 2)
     title = doc.add_title(text="Annual Report 2025", prov=prov(1, 740))
     revenue = doc.add_heading(text="Revenue", level=1, parent=title, prov=prov(1, 700))
     doc.add_text(
@@ -53,15 +67,10 @@ def nested_doc() -> DoclingDocument:
     return doc
 
 
-@pytest.fixture
-def flat_doc() -> DoclingDocument:
-    """Same content, every item a sibling of the body — what most PDFs produce.
-
-    Upstream's depth-based section scan cannot segment this; glosa's level stack
-    must produce the same units as `nested_doc`.
-    """
+def build_flat() -> DoclingDocument:
+    """Same content, every item a sibling of the body — what most PDFs produce."""
     doc = DoclingDocument(name="annual-report")
-    _pages(doc, 2)
+    pages(doc, 2)
     doc.add_title(text="Annual Report 2025", prov=prov(1, 740))
     doc.add_heading(text="Revenue", level=1, prov=prov(1, 700))
     doc.add_text(
@@ -79,21 +88,19 @@ def flat_doc() -> DoclingDocument:
     return doc
 
 
-@pytest.fixture
-def headless_doc() -> DoclingDocument:
+def build_headless() -> DoclingDocument:
     """No headings at all — upstream returns the whole document as the answer."""
     doc = DoclingDocument(name="scan")
-    _pages(doc, 2)
+    pages(doc, 2)
     doc.add_text(label=DocItemLabel.TEXT, text="First page body text.", prov=prov(1, 700))
     doc.add_text(label=DocItemLabel.TEXT, text="Second page body text.", prov=prov(2, 700))
     return doc
 
 
-@pytest.fixture
-def preamble_doc() -> DoclingDocument:
+def build_preamble() -> DoclingDocument:
     """Content before the first heading must still be reachable."""
     doc = DoclingDocument(name="memo")
-    _pages(doc, 1)
+    pages(doc, 1)
     doc.add_text(
         label=DocItemLabel.TEXT,
         text="Internal memo, circulated to the board on 4 March.",
@@ -107,6 +114,146 @@ def preamble_doc() -> DoclingDocument:
         prov=prov(1, 680),
     )
     return doc
+
+
+def build_inline() -> DoclingDocument:
+    """An InlineGroup: one `groups[]` entry plus N `texts[]` style runs.
+
+    Studio projects this as a *single* Paragraph node; the style runs are in
+    `skip_refs` and do not exist in the graph.
+    """
+    doc = DoclingDocument(name="styled")
+    pages(doc, 1)
+    doc.add_heading(text="Clause 4", level=1, prov=prov(1, 740))
+    group = doc.add_inline_group()
+    doc.add_text(label=DocItemLabel.TEXT, text="The fee is", parent=group, prov=prov(1, 700))
+    doc.add_text(label=DocItemLabel.TEXT, text="EUR 4,500", parent=group, prov=prov(1, 700))
+    doc.add_text(label=DocItemLabel.TEXT, text="per month.", parent=group, prov=prov(1, 700))
+    return doc
+
+
+def build_picture() -> DoclingDocument:
+    """A picture whose children are labels lifted out of the diagram.
+
+    Studio keeps the picture node and drops its descendants.
+    """
+    doc = DoclingDocument(name="diagram")
+    pages(doc, 1)
+    doc.add_heading(text="Architecture", level=1, prov=prov(1, 740))
+    caption = doc.add_text(
+        label=DocItemLabel.CAPTION, text="Figure 1 — deployment topology", prov=prov(1, 600)
+    )
+    picture = doc.add_picture(prov=prov(1, 680), caption=caption)
+    doc.add_text(
+        label=DocItemLabel.TEXT, text="NOISE-AXIS-LABEL", parent=picture, prov=prov(1, 670)
+    )
+    return doc
+
+
+def build_table() -> DoclingDocument:
+    doc = DoclingDocument(name="figures")
+    pages(doc, 1)
+    heading = doc.add_heading(text="Financials", level=1, prov=prov(1, 740))
+    cells = [
+        TableCell(
+            text="Year",
+            start_row_offset_idx=0,
+            end_row_offset_idx=1,
+            start_col_offset_idx=0,
+            end_col_offset_idx=1,
+            column_header=True,
+        ),
+        TableCell(
+            text="Revenue",
+            start_row_offset_idx=0,
+            end_row_offset_idx=1,
+            start_col_offset_idx=1,
+            end_col_offset_idx=2,
+            column_header=True,
+        ),
+        TableCell(
+            text="2025",
+            start_row_offset_idx=1,
+            end_row_offset_idx=2,
+            start_col_offset_idx=0,
+            end_col_offset_idx=1,
+        ),
+        TableCell(
+            text="12.4M",
+            start_row_offset_idx=1,
+            end_row_offset_idx=2,
+            start_col_offset_idx=1,
+            end_col_offset_idx=2,
+        ),
+    ]
+    doc.add_table(
+        data=TableData(num_rows=2, num_cols=2, table_cells=cells),
+        parent=heading,
+        prov=prov(1, 700),
+    )
+    return doc
+
+
+def build_furniture() -> DoclingDocument:
+    """A running head: a real graph node, but noise in an excerpt."""
+    from docling_core.types.doc.common.content_layer import ContentLayer
+
+    doc = DoclingDocument(name="report")
+    pages(doc, 1)
+    doc.add_text(
+        label=DocItemLabel.PAGE_HEADER,
+        text="CONFIDENTIAL — Acme Corp",
+        content_layer=ContentLayer.FURNITURE,
+        prov=prov(1, 780),
+    )
+    heading = doc.add_heading(text="Summary", level=1, prov=prov(1, 740))
+    doc.add_text(
+        label=DocItemLabel.TEXT, text="Everything is fine.", parent=heading, prov=prov(1, 700)
+    )
+    return doc
+
+
+@pytest.fixture
+def flat_json() -> str:
+    return build_flat().model_dump_json()
+
+
+@pytest.fixture
+def nested_json() -> str:
+    return build_nested().model_dump_json()
+
+
+@pytest.fixture
+def headless_json() -> str:
+    return build_headless().model_dump_json()
+
+
+@pytest.fixture
+def preamble_json() -> str:
+    return build_preamble().model_dump_json()
+
+
+@pytest.fixture
+def inline_json() -> str:
+    return build_inline().model_dump_json()
+
+
+@pytest.fixture
+def picture_json() -> str:
+    return build_picture().model_dump_json()
+
+
+@pytest.fixture
+def table_json() -> str:
+    return build_table().model_dump_json()
+
+
+@pytest.fixture
+def furniture_json() -> str:
+    return build_furniture().model_dump_json()
+
+
+# --- scripted model ----------------------------------------------------------
 
 
 class FakeChatModel:
@@ -161,11 +308,6 @@ class FakeChatModel:
 
     async def aclose(self) -> None:
         self.closed = True
-
-
-@pytest.fixture
-def fake_model_factory() -> type[FakeChatModel]:
-    return FakeChatModel
 
 
 def assert_is_chat_model(model: object) -> None:
