@@ -22,8 +22,8 @@ chunkless RAG loop:
 | Public API for Studio  | none (Studio calls `_rag_loop`)   | stable `ReasoningRunner` contract                  |
 | LLM backends           | Ollama only (via `mellea`)        | Ollama, OpenAI-compatible, vLLM, watsonx, LiteLLM  |
 | Structured output      | ` ```json ` block + regex + retry | schema-constrained decoding, repair fallback       |
-| Concurrency            | sync, blocking                    | async-native, cancellable, deadline-bounded        |
-| Retrieval prior        | none (LLM reads the outline)      | BM25 + optional vectors, fused with LLM ranking    |
+| Concurrency            | sync, one section at a time       | async, candidates read in parallel, deadline-bound |
+| Retrieval prior        | none (LLM reads the outline)      | BM25 shortlist, heading/body fused by RRF          |
 | Provenance             | `section_ref` + char count        | graph node ids + page + TOPLEFT bbox per step      |
 | Streaming              | no                                | typed events (SSE-ready)                           |
 | Runtime deps           | `mellea`, `docling-agent`         | `httpx`, `pydantic` — not even `docling-core`      |
@@ -78,10 +78,14 @@ import graph and fails if a dependency points outward — `json.loads` lives in
 
 ## Status
 
-Alpha. Phases P0–P1 are done: Studio-aligned document projection, outline
-navigation, Ollama and OpenAI-compatible backends, schema-constrained decoding,
-budgets, and the Studio-facing runner. Retrieval pre-ranking, parallel reads,
-sentence-level evidence and streaming are next — see the plan.
+Alpha. Reading a **single** document is complete (P0–P2): Studio-aligned
+projection, BM25 retrieval prior, parallel reads, query-aware excerpt packing,
+Ollama and OpenAI-compatible backends, schema-constrained decoding, budgets and
+the Studio-facing runner.
+
+Cross-document reading is the next level and is deliberately not started: it
+composes single-document reads rather than extending the loop. Sentence-level
+evidence and streaming follow — see the plan.
 
 ## Development
 

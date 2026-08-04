@@ -15,8 +15,10 @@ from glosa.domain.errors import (
     GlosaError,
     ReasoningParseError,
 )
+from glosa.domain.hybrid import HybridConfig, HybridStrategy
 from glosa.domain.index import DocIndex, Unit
 from glosa.domain.navigate import NavigateConfig, NavigateStrategy
+from glosa.domain.rank import Candidate, UnitRanker
 from glosa.domain.values import (
     Element,
     Excerpt,
@@ -44,6 +46,7 @@ __all__ = [
     "BackendError",
     "Budget",
     "BudgetExhausted",
+    "Candidate",
     "ChatModel",
     "DocIndex",
     "DoclingProjection",
@@ -55,6 +58,8 @@ __all__ = [
     "Excerpt",
     "GlosaError",
     "GlosaReasoningRunner",
+    "HybridConfig",
+    "HybridStrategy",
     "LegacyIteration",
     "LegacyResult",
     "Message",
@@ -72,6 +77,7 @@ __all__ = [
     "TreeReader",
     "Unit",
     "UnitKind",
+    "UnitRanker",
     "__version__",
     "node_id_for",
     "page_node_id",

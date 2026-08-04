@@ -27,6 +27,29 @@ Studio can render it with the bbox overlay it already has.
 
 Name is free on PyPI (`glosa`, checked). Fallback: `docling-glosa`.
 
+### Two levels of reading
+
+**Level 1 — one document.** A question, one `DoclingDocument`, one `Trace`.
+This is what exists today and where the quality lives: if reading a single
+document is unreliable, nothing built on top of it can be better.
+
+**Level 2 — a set of documents.** Not what `docling-agent` does today (N
+independent loops, then a prompt asking the model to merge the answers): that
+loses per-claim attribution, spends an unbounded budget, and turns a
+disagreement between two documents into an averaged sentence. The shape instead
+is *route → read → reconcile*: decide which documents can plausibly answer,
+read each with level 1 under a **shared** budget, then reconcile with each
+claim still attributed to its document and disagreements surfaced rather than
+smoothed.
+
+Level 1 is deliberately built as the composable unit that makes level 2 cheap:
+it takes `(projection, question)` and returns a self-contained `Trace` — node
+ids, pages, status, budget spend. Level 2 will compose readers, not reimplement
+reading. The one thing to add when it lands is document identity on the
+`Trace`, which is additive.
+
+Everything below concerns level 1.
+
 ---
 
 ## 2. The document object
@@ -216,7 +239,11 @@ glosa/
     values.py           Element, Scope, Span, Excerpt, Step, Trace, RunStatus
     index.py            DocIndex — units, excerpts, budgets over a projection
     outline.py          budget-aware outline rendering
-    navigate.py         ✅ the reading loop: notes memory, abstention, budgets
+    lexical.py          ✅ BM25 over projected elements — no dependency
+    rank.py             ✅ UnitRanker: heading/body fusion by reciprocal rank
+    reading.py          ✅ shared vocabulary: prompts, schemas, the three calls
+    hybrid.py           ✅ default strategy: retrieve → read in parallel → confirm
+    navigate.py         ✅ model-driven navigation; the fallback when retrieval is dry
     budget.py           ✅ step / call / wall-clock budget, deadline
     errors.py
   ports/                protocols only
@@ -232,7 +259,7 @@ glosa/
     studio.py           ✅ GlosaReasoningRunner (implements Studio's port)
     legacy.py           ✅ six-field wire projection + its pydantic models
   cli.py                ✅ composition root: glosa ask | map
-  retrieve/             ← P2  lexical (BM25), vector, structure, fuse
+  retrieve/             ← P4  vector (Studio's OpenSearch), structural expansion
   verify/               ← P3  sentence → evidence alignment, groundedness
   runtime/              ← P3  typed event stream, replay journal
   server/               ← P3  standalone SSE sidecar
@@ -370,11 +397,26 @@ document is parsed once across queries.
 *Not yet verified* (needs a running Studio + Ollama): the end-to-end round trip
 against a real backend, and the Vue overlay rendering a glosa trace.
 
-### P2 — Better loop (3–4 days)
+### P2 — Better single-document reading ✅ done
 
-BM25 shortlist + RRF fusion, parallel frontier, multi-document with a shared
-budget. Notes memory, budgets, abstention and heading-less segmentation landed
-early in P1 — they were cheap and they carry most of the robustness win.
+Shipped: BM25 over the projected elements (`domain/lexical.py`), a `UnitRanker`
+fusing heading and body rankings by RRF, `HybridStrategy` — retrieval proposes,
+the model confirms, candidates are read concurrently — and query-aware excerpt
+packing, so an over-budget section keeps the passages that match the question
+instead of its first N characters.
+
+What it changes, measured against the same scripted model on the same document:
+a question whose vocabulary appears in the text is answered in **one** LLM call
+instead of four, because the model no longer spends a round-trip choosing. When
+the vocabulary does not match — a French question against an English contract —
+the shortlist comes back empty and the round is handed to `NavigateStrategy`,
+which is why retrieval never decides alone.
+
+Multi-document moves to level 2 (see §1) rather than being bolted onto the
+single-document loop.
+
+*Still needs the benchmark corpus* to put numbers on token and latency
+reduction over real documents; the call-count reduction is pinned by tests.
 
 *Done when*: on a 20-question benchmark over 5 Studio-converted PDFs —
 ≥30 % fewer tokens, ≥40 % lower p95 latency, and ≥1 correct abstention where

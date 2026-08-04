@@ -41,8 +41,8 @@ from glosa.adapters.legacy import (
     to_legacy,
 )
 from glosa.domain.errors import ReasoningParseError
+from glosa.domain.hybrid import HybridConfig, HybridStrategy
 from glosa.domain.index import DocIndex
-from glosa.domain.navigate import NavigateConfig, NavigateStrategy
 from glosa.infra.docling.projection import DoclingProjector
 
 if TYPE_CHECKING:
@@ -69,6 +69,9 @@ class GlosaReasoningRunner:
             the bundled Docling projector; pass one built with the host's own
             tree reader so the collapse rules have a single implementation.
         config: Loop tuning. Defaults suit a 30-page report on a local 8B model.
+            Retrieval-first with a parallel frontier; pass a `NavigateStrategy`
+            config instead by constructing the strategy yourself if you want
+            pure model-driven navigation.
         cache_size: How many parsed documents to keep indexed. Studio asks
             several questions of the same document, and re-parsing it each time
             is pure waste.
@@ -85,7 +88,7 @@ class GlosaReasoningRunner:
         model: ChatModel,
         *,
         projector: DocumentProjector | None = None,
-        config: NavigateConfig | None = None,
+        config: HybridConfig | None = None,
         cache_size: int = DEFAULT_CACHE_SIZE,
         include_furniture: bool = False,
         result_factory: ResultFactory = LegacyResult,
@@ -95,7 +98,7 @@ class GlosaReasoningRunner:
     ) -> None:
         self._model = model
         self._projector: DocumentProjector = projector or DoclingProjector()
-        self._config = config or NavigateConfig()
+        self._config = config or HybridConfig()
         self._cache: OrderedDict[str, DocIndex] = OrderedDict()
         self._cache_size = max(1, cache_size)
         self._include_furniture = include_furniture
@@ -144,7 +147,7 @@ class GlosaReasoningRunner:
         """Run the loop and return the full native trace, provenance included."""
         model = self._model if model_id is None else self._model.for_model(model_id)
         index = self._index_for(document_json)
-        strategy = NavigateStrategy(model, self._config)
+        strategy = HybridStrategy(model, self._config)
         try:
             return await strategy.run(index, query)
         except ReasoningParseError as exc:

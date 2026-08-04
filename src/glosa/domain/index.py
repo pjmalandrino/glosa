@@ -12,16 +12,21 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from glosa.domain.lexical import Bm25Index
 from glosa.domain.values import Excerpt, ExcerptPart, UnitKind
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from glosa.domain.rank import UnitRanker
     from glosa.domain.values import Element
     from glosa.ports.document import DocumentProjection
 
 DEFAULT_EXCERPT_BUDGET = 8_000
 TRUNCATION_MARKER = "\n\n[… excerpt truncated to fit the context budget …]"
+SELECTION_MARKER = (
+    "\n\n[… {n} passage(s) of this section omitted; the ones matching the question are shown …]"
+)
 _TITLE_CLIP = 120
 _MIN_PARTIAL_CHARS = 200
 
@@ -71,7 +76,8 @@ class DocIndex:
         self._include_furniture = include_furniture
         self._units: dict[str, Unit] = {}
         self._elements: dict[str, tuple[Element, ...]] = {}
-        self._excerpts: dict[tuple[str, int], Excerpt] = {}
+        self._excerpts: dict[tuple[str, int, str], Excerpt] = {}
+        self._ranker: UnitRanker | None = None
         self._build()
 
     # -- construction ---------------------------------------------------------
@@ -170,12 +176,37 @@ class DocIndex:
     def title(self) -> str:
         return self.projection.title
 
+    @property
+    def ranker(self) -> UnitRanker:
+        """Lexical shortlist over these units, built once per document.
+
+        The indexes depend on the document, not on the question, so a host that
+        asks several questions of the same analysis pays for them once.
+        """
+        if self._ranker is None:
+            from glosa.domain.rank import UnitRanker
+
+            self._ranker = UnitRanker(self)
+        return self._ranker
+
     def get(self, ref: str) -> Unit | None:
         return self._units.get(ref)
 
-    def excerpt(self, ref: str, *, char_budget: int = DEFAULT_EXCERPT_BUDGET) -> Excerpt:
-        """Text of one unit, capped at `char_budget`."""
-        key = (ref, char_budget)
+    def excerpt(
+        self,
+        ref: str,
+        *,
+        char_budget: int = DEFAULT_EXCERPT_BUDGET,
+        focus: str | None = None,
+    ) -> Excerpt:
+        """Text of one unit, capped at `char_budget`.
+
+        `focus` is the question being answered. It only matters when the unit
+        does not fit: instead of keeping the first N characters and hoping the
+        answer is near the top, the passages that lexically match the question
+        are kept, in reading order. A 40-page appendix stops being a coin flip.
+        """
+        key = (ref, char_budget, focus or "")
         cached = self._excerpts.get(key)
         if cached is not None:
             return cached
@@ -189,6 +220,7 @@ class DocIndex:
                 kind=unit.kind,
                 elements=self._elements.get(ref, ()),
                 char_budget=char_budget,
+                focus=focus,
             )
         self._excerpts[key] = excerpt
         return excerpt
@@ -207,8 +239,18 @@ class DocIndex:
 
 
 def _assemble(
-    *, ref: str, kind: UnitKind, elements: Sequence[Element], char_budget: int
+    *,
+    ref: str,
+    kind: UnitKind,
+    elements: Sequence[Element],
+    char_budget: int,
+    focus: str | None = None,
 ) -> Excerpt:
+    if focus and sum(len(e.text) for e in elements) > char_budget:
+        return _assemble_by_relevance(
+            ref=ref, kind=kind, elements=elements, char_budget=char_budget, focus=focus
+        )
+
     parts: list[ExcerptPart] = []
     chunks: list[str] = []
     used = 0
@@ -235,6 +277,43 @@ def _assemble(
     if truncated:
         body += TRUNCATION_MARKER
     return Excerpt(ref=ref, kind=kind, text=body, parts=tuple(parts), truncated=truncated)
+
+
+def _assemble_by_relevance(
+    *, ref: str, kind: UnitKind, elements: Sequence[Element], char_budget: int, focus: str
+) -> Excerpt:
+    """Pack the passages that match `focus`, then restore reading order."""
+    index = Bm25Index((e.self_ref, e.text) for e in elements if e.text)
+    ranked = {hit.ref: hit.score for hit in index.rank(focus)}
+    if not ranked:
+        # No lexical signal inside the section: head-first is as good a guess
+        # as any, and pretending otherwise would be theatre.
+        return _assemble(ref=ref, kind=kind, elements=elements, char_budget=char_budget)
+
+    order = {e.self_ref: i for i, e in enumerate(elements)}
+    by_relevance = sorted(
+        (e for e in elements if e.text),
+        key=lambda e: (-ranked.get(e.self_ref, 0.0), order[e.self_ref]),
+    )
+
+    kept: list[Element] = []
+    used = 0
+    for element in by_relevance:
+        if used + len(element.text) > char_budget:
+            continue
+        kept.append(element)
+        used += len(element.text)
+
+    if not kept:  # a single element larger than the whole budget
+        return _assemble(ref=ref, kind=kind, elements=elements, char_budget=char_budget)
+
+    kept.sort(key=lambda e: order[e.self_ref])
+    omitted = sum(1 for e in elements if e.text) - len(kept)
+    parts = tuple(_part(e, e.text) for e in kept)
+    body = "\n\n".join(e.text for e in kept)
+    if omitted:
+        body += SELECTION_MARKER.format(n=omitted)
+    return Excerpt(ref=ref, kind=kind, text=body, parts=parts, truncated=bool(omitted))
 
 
 def _part(element: Element, text: str) -> ExcerptPart:

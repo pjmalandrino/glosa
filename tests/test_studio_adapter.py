@@ -9,13 +9,14 @@ import pytest
 from glosa.adapters.legacy import LegacyIteration
 from glosa.adapters.studio import GlosaReasoningRunner
 from glosa.domain.errors import ReasoningParseError
-from glosa.domain.navigate import NavigateConfig, Reading, Selection
+from glosa.domain.hybrid import HybridConfig
+from glosa.domain.reading import Reading
 from glosa.domain.values import RunStatus, Step, Trace
 from glosa.infra.docling.projection import DoclingProjector, node_id_for
 from glosa.ports.document import DocumentProjection
 from tests.conftest import FakeChatModel, index_of
 
-LOOP = NavigateConfig(direct_char_threshold=0)
+LOOP = HybridConfig(direct_char_threshold=0)
 
 
 # --- Studio's domain types, transcribed (see contract/test_studio_port.py) ---
@@ -183,12 +184,7 @@ async def test_run_trace_exposes_provenance_the_legacy_shape_drops(
     flat_json: str,
 ) -> None:
     runner = GlosaReasoningRunner(
-        FakeChatModel(
-            [
-                Selection(reason="here", ref=index_of(flat_json).units[1].ref),
-                Reading(sufficient=True, response="12.4M"),
-            ]
-        ),
+        FakeChatModel([Reading(sufficient=True, response="12.4M")]),
         config=LOOP,
     )
     trace = await runner.run_trace(document_json=flat_json, query="revenue?")

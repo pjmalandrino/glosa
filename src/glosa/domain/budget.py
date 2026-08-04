@@ -55,6 +55,14 @@ class Budget:
         if self.deadline_s is not None and self.elapsed_s >= self.deadline_s:
             raise BudgetExhausted(f"deadline of {self.deadline_s:.0f}s reached")
 
+    @property
+    def steps_left(self) -> int:
+        return max(0, self.max_steps - self.steps)
+
+    @property
+    def calls_left(self) -> int:
+        return max(0, self.max_llm_calls - self.calls)
+
     def can_afford_extra_call(self) -> bool:
         """True when there is room for a non-essential call, e.g. composing a
         partial answer after the loop stopped."""

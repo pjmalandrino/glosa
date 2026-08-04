@@ -51,11 +51,13 @@ STDLIB_OK = frozenset(
         "itertools",
         "json",
         "logging",
+        "math",
         "pathlib",
         "re",
         "sys",
         "time",
         "typing",
+        "unicodedata",
     }
 )
 
