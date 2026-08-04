@@ -6,6 +6,7 @@ from docling_core.types.doc import DocItemLabel, DoclingDocument
 
 from glosa.domain.index import DocIndex
 from glosa.domain.navigate import NavigateConfig, NavigateStrategy, Reading, Selection
+from glosa.domain.outline import render_outline
 from glosa.domain.values import RunStatus, UnitKind
 from tests.conftest import FakeChatModel, index_of, pages, prov
 
@@ -263,3 +264,76 @@ async def test_an_empty_document_is_reported_not_answered() -> None:
     trace = await NavigateStrategy(FakeChatModel([])).run(_index(empty), "q")
     assert trace.status is RunStatus.NOT_IN_DOCUMENT
     assert trace.steps == ()
+
+
+async def test_the_model_is_only_offered_refs_the_map_showed(flat_json: str) -> None:
+    """`allowed` must be a subset of what the outline rendered."""
+    index = _index(flat_json)
+    model = FakeChatModel(
+        [
+            Selection(reason="a", ref=_refs(flat_json)[1]),
+            Reading(sufficient=True, response="ok"),
+        ]
+    )
+    await NavigateStrategy(model, LOOP).run(index, "q")
+
+    prompt = model.structured_calls[0][-1].content
+    offered = prompt.rsplit("exactly one of: ", 1)[1]
+    outline = render_outline(index.units).text
+    assert all(ref in outline for ref in index.refs if f"'{ref}'" in offered)
+
+
+async def test_a_hidden_subsection_gets_a_descent_round() -> None:
+    """Coarse-to-fine: pick the chapter from a fitted map, then its subsection."""
+    doc = DoclingDocument(name="code")
+    pages(doc, 1)
+    parent = doc.add_heading(text="Chapter 4 on regulatory reporting", level=1, prov=prov(1, 740))
+    doc.add_text(
+        label=DocItemLabel.TEXT, text="Chapter preamble. " * 40, parent=parent, prov=prov(1, 700)
+    )
+    child = doc.add_heading(
+        text="Section 4.3 on indemnities", level=2, parent=parent, prov=prov(1, 600)
+    )
+    doc.add_text(
+        label=DocItemLabel.TEXT,
+        text="The cap is 500,000 EUR. " * 40,
+        parent=child,
+        prov=prov(1, 580),
+    )
+    document_json = doc.model_dump_json()
+    index = _index(document_json)
+
+    parent_ref, child_ref = index.units[0].ref, index.units[1].ref
+    assert index.children_of(parent_ref) == (index.units[1],)
+
+    model = FakeChatModel(
+        [
+            Selection(reason="the chapter", ref=parent_ref),
+            Selection(reason="its indemnity subsection", ref=child_ref),
+            Reading(sufficient=True, response="500,000 EUR."),
+        ]
+    )
+    # A budget so small that only level-0 headings survive the map.
+    config = NavigateConfig(direct_char_threshold=0, outline_char_budget=90)
+    trace = await NavigateStrategy(model, config).run(index, "indemnity cap")
+
+    assert trace.steps[0].ref == child_ref, "the descent, not the parent, is what was read"
+    assert trace.steps[0].reason == "its indemnity subsection"
+
+
+async def test_a_failed_descent_keeps_the_parent(flat_json: str) -> None:
+    index = _index(flat_json)
+    risks = next(u for u in index.units if u.title == "Risks")
+    model = FakeChatModel(
+        [
+            Selection(reason="risks", ref=risks.ref),
+            Selection(reason="nonsense", ref="#/texts/999"),
+            Selection(reason="still nonsense", ref="#/texts/998"),
+            Reading(sufficient=True, response="ok"),
+        ]
+    )
+    config = NavigateConfig(direct_char_threshold=0, outline_char_budget=100)
+    trace = await NavigateStrategy(model, config).run(index, "legal risk")
+
+    assert trace.steps[0].ref == risks.ref
+    assert trace.steps[0].fallback is False, "a failed descent is not a failed selection"

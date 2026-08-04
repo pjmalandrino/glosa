@@ -50,6 +50,13 @@ class Unit:
     page_no: int | None = None
     pages: tuple[int, ...] = ()
     element_refs: tuple[str, ...] = ()
+    summary: str = ""
+    """Host-written summary of this scope, when enrichment ran. Empty otherwise."""
+    keywords: tuple[str, ...] = ()
+
+    @property
+    def enriched(self) -> bool:
+        return bool(self.summary or self.keywords)
 
     @property
     def label(self) -> str:
@@ -113,6 +120,8 @@ class DocIndex:
                 page_no=anchor.page_no,
                 pages=_pages_of(elements),
                 element_refs=tuple(e.self_ref for e in elements),
+                summary=_summary_of(elements),
+                keywords=_keywords_of(elements),
             )
 
     def _build_pages(self) -> None:
@@ -135,6 +144,8 @@ class DocIndex:
                 page_no=page_no,
                 pages=(page_no,),
                 element_refs=tuple(e.self_ref for e in elements),
+                summary=_summary_of(elements),
+                keywords=_keywords_of(elements),
             )
 
     def _build_whole_document(self, elements: Sequence[Element]) -> None:
@@ -150,6 +161,8 @@ class DocIndex:
             graph_label=anchor.graph_label,
             pages=_pages_of(elements),
             element_refs=tuple(e.self_ref for e in elements),
+            summary=_summary_of(elements),
+            keywords=_keywords_of(elements),
         )
 
     # -- queries --------------------------------------------------------------
@@ -191,6 +204,27 @@ class DocIndex:
 
     def get(self, ref: str) -> Unit | None:
         return self._units.get(ref)
+
+    def children_of(self, ref: str) -> tuple[Unit, ...]:
+        """Units nested under `ref` by heading level, in reading order.
+
+        Navigation only. A section's *scope* stops at the next heading — that
+        is what the UI draws and what a step reads. But for deciding where to
+        look, an `h1` still presides over the `h2`s that follow it, and a
+        coarse-to-fine descent is how you navigate 300 sections without
+        flattening them into one list.
+        """
+        parent = self._units.get(ref)
+        if parent is None or parent.level is None:
+            return ()
+        nested: list[Unit] = []
+        for unit in self.units:
+            if unit.order <= parent.order:
+                continue
+            if unit.level is None or unit.level <= parent.level:
+                break
+            nested.append(unit)
+        return tuple(nested)
 
     def text_of(self, ref: str) -> str:
         """Full text of a unit, ignoring every budget.
@@ -335,6 +369,22 @@ def _part(element: Element, text: str) -> ExcerptPart:
         bbox=element.bbox,
         graph_label=element.graph_label,
     )
+
+
+def _summary_of(elements: Sequence[Element]) -> str:
+    """The scope's summary: its anchor's, or the first one any member carries."""
+    for element in elements:
+        if element.summary:
+            return element.summary
+    return ""
+
+
+def _keywords_of(elements: Sequence[Element]) -> tuple[str, ...]:
+    seen: dict[str, None] = {}
+    for element in elements:
+        for keyword in element.keywords:
+            seen[keyword] = None
+    return tuple(seen)
 
 
 def _pages_of(elements: Sequence[Element]) -> tuple[int, ...]:

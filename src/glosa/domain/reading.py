@@ -174,7 +174,7 @@ async def select_unit(
     model: ChatModel,
     *,
     query: str,
-    units: Sequence[Unit],
+    index: DocIndex,
     candidates: Sequence[Unit],
     visited: Sequence[str],
     notes: Sequence[Note],
@@ -184,12 +184,73 @@ async def select_unit(
 ) -> tuple[Selection, bool]:
     """Ask the model to pick the next unit. Returns `(selection, used_fallback)`.
 
+    Two things the naive version gets wrong:
+
+    * it offers refs the map does not show. When the outline was fitted to a
+      budget, the candidate list must shrink to what was actually rendered —
+      otherwise the model is invited to name a section it never saw.
+    * it navigates a flat list. When the fitted map hid a section's
+      subsections, picking that section opens a second, cheap round over just
+      those children: coarse-to-fine, bounded to one extra call.
+    """
+    outline = render_outline(index.units, char_budget=outline_char_budget, visited=visited)
+    visible = [u for u in candidates if u.ref in outline.refs] or list(candidates)
+
+    selection, fallback = await _choose(
+        model,
+        query=query,
+        outline=outline.text,
+        candidates=visible,
+        notes=notes,
+        budget=budget,
+        max_tokens=max_tokens,
+    )
+    if fallback:
+        return selection, True
+
+    hidden = [
+        child
+        for child in index.children_of(selection.ref)
+        if child.ref not in outline.refs and child.ref not in visited
+    ]
+    if not hidden or budget.calls_left < 1:
+        return selection, False
+
+    parent = index.get(selection.ref)
+    deeper_candidates = [*([parent] if parent is not None else []), *hidden]
+    deeper_outline = render_outline(
+        deeper_candidates, char_budget=outline_char_budget, visited=visited
+    )
+    deeper, deeper_fallback = await _choose(
+        model,
+        query=query,
+        outline=deeper_outline.text,
+        candidates=deeper_candidates,
+        notes=notes,
+        budget=budget,
+        max_tokens=max_tokens,
+    )
+    # A failed descent is not a failed selection: keep the parent.
+    return (selection if deeper_fallback else deeper), False
+
+
+async def _choose(
+    model: ChatModel,
+    *,
+    query: str,
+    outline: str,
+    candidates: Sequence[Unit],
+    notes: Sequence[Note],
+    budget: Budget,
+    max_tokens: int | None,
+) -> tuple[Selection, bool]:
+    """One pick over one map.
+
     An unusable ref gets one corrective round-trip naming the mistake — cheaper
     and far more reliable than rejection-sampling the same prompt three times.
-    If that also fails, the first candidate is taken and the step records that
+    If that also fails, the first candidate is taken and the caller records that
     glosa chose, rather than dressing it up as the model's decision.
     """
-    outline = render_outline(units, char_budget=outline_char_budget, visited=visited)
     allowed = [u.ref for u in candidates]
     allowed_set = frozenset(allowed)
     messages = [system(SYSTEM_PROMPT), user(selection_prompt(query, outline, allowed, notes))]

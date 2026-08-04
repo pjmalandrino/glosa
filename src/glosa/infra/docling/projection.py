@@ -126,6 +126,7 @@ class DoclingProjection:
             level = _as_int(item.get("level"))
             if level is None and label == "title":
                 level = 0
+            summary, keywords = _enrichment(item)
             element = Element(
                 self_ref=ref,
                 node_id=node_id_for(ref),
@@ -138,6 +139,8 @@ class DoclingProjection:
                 pages=_pages_of(provs),
                 bbox=bbox,
                 provs=tuple(provs),
+                summary=summary,
+                keywords=keywords,
                 parent=parent_ref(item),
                 is_section=is_section_header(item),
                 is_furniture=_is_furniture(item, label),
@@ -266,6 +269,27 @@ def to_topleft(prov: dict[str, Any], page_height: float | None) -> BBox | None:
     if right <= left or bottom <= top:
         return None
     return (left, top, right, bottom)
+
+
+def _enrichment(item: dict[str, Any]) -> tuple[str, tuple[str, ...]]:
+    """Pull `meta.summary.text` and `meta.keywords.values` when the host's
+    enrichment pipeline produced them. Absent enrichment, both are empty and
+    the lexical prior carries the whole load."""
+    meta = item.get("meta")
+    if not isinstance(meta, dict):
+        return ("", ())
+
+    summary = ""
+    node = meta.get("summary")
+    if isinstance(node, dict) and isinstance(node.get("text"), str):
+        summary = node["text"].strip()
+
+    keywords: tuple[str, ...] = ()
+    node = meta.get("keywords")
+    if isinstance(node, dict) and isinstance(node.get("values"), list):
+        keywords = tuple(str(v).strip() for v in node["values"] if str(v).strip())
+
+    return summary, keywords
 
 
 def _pages_of(provs: Sequence[dict[str, Any]]) -> tuple[int, ...]:

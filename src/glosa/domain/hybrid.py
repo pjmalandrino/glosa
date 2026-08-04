@@ -46,6 +46,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from glosa.domain.index import DocIndex, Unit
+    from glosa.domain.rank import Candidate
     from glosa.ports.chat import ChatModel
 
 logger = logging.getLogger(__name__)
@@ -67,7 +68,13 @@ class HybridConfig:
     shortlist_size: int = 8
     """How many units the lexical prior proposes per round."""
     fanout: int = 3
-    """How many of them are read concurrently."""
+    """How many of them are read concurrently, at most."""
+    decisive_ratio: float = 1.5
+    """When the top candidate outscores the runner-up by this much, read it
+    alone. Fanout buys breadth when the shortlist is flat and wastes calls when
+    it is not."""
+    gap_notes: int = 2
+    """How many recent findings feed the next round's query."""
     absent_votes_to_stop: int = 2
 
 
@@ -241,12 +248,19 @@ class HybridStrategy:
         if room <= 0:
             return []
 
-        candidates = index.ranker.shortlist(query, limit=cfg.shortlist_size, exclude=visited)
+        probe = self._probe(index, query, notes, visited)
+        candidates = (
+            index.ranker.shortlist(probe, limit=cfg.shortlist_size, exclude=visited)
+            if probe
+            else []
+        )
         if candidates:
-            return [_Pick(c.unit, c.rationale) for c in candidates[:room]]
+            width = min(room, self._fanout_for(candidates))
+            return [_Pick(c.unit, c.rationale) for c in candidates[:width]]
 
-        # No lexical signal anywhere — the question shares no vocabulary with
-        # the document. Hand the round to the model, which can read intent.
+        # Either no lexical signal at all, or every query term already read.
+        # Both mean the same thing: more term matching will not help. Hand the
+        # round to the model, which can read intent and follow structure.
         unread = [u for u in index.units if u.ref not in visited]
         if not unread or budget.calls_left < 2:
             return []
@@ -254,7 +268,7 @@ class HybridStrategy:
         selection, fallback = await select_unit(
             self._model,
             query=query,
-            units=index.units,
+            index=index,
             candidates=unread,
             visited=visited,
             notes=notes,
@@ -266,6 +280,42 @@ class HybridStrategy:
         if unit is None:  # pragma: no cover - select_unit guarantees membership
             return []
         return [_Pick(unit, selection.reason, fallback=fallback)]
+
+    def _probe(
+        self,
+        index: DocIndex,
+        query: str,
+        notes: Sequence[Note],
+        visited: Sequence[str],
+    ) -> str:
+        """What to search for this round — empty means "retrieval has nothing".
+
+        Three regimes, and they matter:
+
+        * **first round** — search the question.
+        * **question not yet exhausted** — search the question *plus* what the
+          reader just said was missing. Without this the loop is "retrieve
+          once, repeat" and the gap it identified is thrown away.
+        * **every question term already read** — searching them again can only
+          re-propose the same sections. But the reader's own words are new
+          vocabulary ("look for the invoicing terms"), so search *those alone*.
+          Only if there are none does retrieval stand aside for the model.
+        """
+        gap = " ".join(note.finding for note in notes[-self._config.gap_notes :]).strip()
+        if not visited:
+            return query
+        if index.ranker.body.missing_terms(query, visited):
+            return f"{query} {gap}".strip()
+        return gap
+
+    def _fanout_for(self, candidates: Sequence[Candidate]) -> int:
+        """Breadth when the shortlist is flat, depth when it has a winner."""
+        if len(candidates) < 2:
+            return 1
+        top, runner_up = candidates[0].score, candidates[1].score
+        if runner_up > 0 and top >= self._config.decisive_ratio * runner_up:
+            return 1
+        return self._config.fanout
 
     # -- reading --------------------------------------------------------------
 

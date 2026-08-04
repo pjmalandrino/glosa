@@ -147,3 +147,87 @@ def test_retrieval_indexes_the_whole_section_not_the_budgeted_excerpt() -> None:
 
     assert unit.char_len > len(index.excerpt(unit.ref).text), "fixture must overflow the budget"
     assert index.ranker.shortlist("indemnity cap")[0].ref == unit.ref
+
+
+# --- host enrichment as a retrieval signal ------------------------------------
+
+
+def _enriched_json() -> str:
+    """Sections whose headings say nothing and whose summaries say everything.
+
+    This is the shape PageIndex builds its index around, and the shape
+    `docling-agent`'s enricher writes into `meta.summary`.
+    """
+    from docling_core.types.doc.common.meta import BaseMeta, KeywordsMetaField, SummaryMetaField
+
+    doc = DoclingDocument(name="contract")
+    pages(doc, 1)
+    written = [
+        (
+            "Article 11",
+            "Aucune stipulation contraire.",
+            "Governs the delivery timetable.",
+            ["timetable"],
+        ),
+        (
+            "Article 12",
+            "Aucune stipulation contraire.",
+            "Caps the supplier's liability.",
+            ["liability cap"],
+        ),
+    ]
+    for title, body, summary, keywords in written:
+        heading = doc.add_heading(text=title, level=1, prov=prov(1, 740))
+        heading.meta = BaseMeta(
+            summary=SummaryMetaField(text=summary),
+            keywords=KeywordsMetaField(values=keywords),
+        )
+        doc.add_text(label=DocItemLabel.TEXT, text=body, parent=heading, prov=prov(1, 700))
+    return doc.model_dump_json()
+
+
+def test_enrichment_is_read_off_the_document_when_the_host_produced_it() -> None:
+    index = index_of(_enriched_json())
+    unit = index.units[1]
+
+    assert unit.summary == "Caps the supplier's liability."
+    assert unit.keywords == ("liability cap",)
+    assert unit.enriched is True
+    assert index.ranker.uses_enrichment is True
+
+
+def test_a_summary_finds_what_neither_heading_nor_body_contains() -> None:
+    """ "Article 12" and "Aucune stipulation contraire" share no word with the
+    question. Without the summary this shortlist is empty."""
+    index = index_of(_enriched_json())
+    best = index.ranker.shortlist("liability")
+
+    assert best, "the summary is the only view that can match here"
+    assert best[0].unit.title == "Article 12"
+    assert "summary rank 1" in best[0].rationale
+
+
+def test_a_document_without_enrichment_still_ranks_on_text() -> None:
+    index = index_of(_sections_json())
+    assert index.ranker.uses_enrichment is False
+    assert index.ranker.shortlist("late delivery penalty")[0].unit.title == "Article 2"
+
+
+def test_the_outline_shows_the_summary_so_the_model_can_navigate_by_it() -> None:
+    from glosa.domain.outline import render_outline
+
+    index = index_of(_enriched_json())
+    text = render_outline(index.units).text
+
+    assert "Caps the supplier's liability." in text
+    assert "↳" in text
+
+
+def test_the_outline_reports_which_refs_it_actually_showed() -> None:
+    """Offering a model refs it cannot see invites it to name one at random."""
+    from glosa.domain.outline import render_outline
+
+    index = index_of(_sections_json())
+    full = render_outline(index.units)
+    assert full.refs == {u.ref for u in index.units}
+    assert full.complete is True

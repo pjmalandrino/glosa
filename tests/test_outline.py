@@ -31,7 +31,7 @@ def _big_doc_json(sections: int, depth_two_per_section: int = 3) -> str:
 
 def test_every_unit_is_listed_with_its_ref(flat_json: str) -> None:
     index = index_of(flat_json)
-    text = render_outline(index.units)
+    text = render_outline(index.units).text
     for unit in index.units:
         assert unit.ref in text
         assert unit.title in text
@@ -42,7 +42,7 @@ def test_visited_units_are_marked(flat_json: str) -> None:
     target = index.units[1].ref
     line = next(
         line
-        for line in render_outline(index.units, visited=[target]).splitlines()
+        for line in render_outline(index.units, visited=[target]).text.splitlines()
         if target in line
     )
     assert "✓" in line
@@ -50,7 +50,7 @@ def test_visited_units_are_marked(flat_json: str) -> None:
 
 def test_deepest_levels_are_dropped_before_anything_is_elided() -> None:
     index = index_of(_big_doc_json(sections=30))
-    text = render_outline(index.units, char_budget=2_000)
+    text = render_outline(index.units, char_budget=2_000).text
     assert len(text) <= 2_000
     assert "Chapter 0" in text
     # h2 entries are the first thing to go.
@@ -60,7 +60,7 @@ def test_deepest_levels_are_dropped_before_anything_is_elided() -> None:
 def test_elision_is_announced_with_a_count() -> None:
     """A silently shortened map reads as a complete one. It must not."""
     index = index_of(_big_doc_json(sections=200, depth_two_per_section=0))
-    text = render_outline(index.units, char_budget=1_500)
+    text = render_outline(index.units, char_budget=1_500).text
     assert len(text) <= 1_500
     assert "omitted from this map" in text
     assert "Chapter 0" in text
@@ -68,4 +68,31 @@ def test_elision_is_announced_with_a_count() -> None:
 
 
 def test_empty_document_renders_a_placeholder() -> None:
-    assert render_outline([]) == "(empty document)"
+    assert render_outline([]).text == "(empty document)"
+
+
+def test_an_elided_map_reports_only_the_refs_it_showed() -> None:
+    """The candidate list must shrink to the map, or the model is invited to
+    name a section it never saw."""
+    index = index_of(_big_doc_json(sections=200, depth_two_per_section=0))
+    outline = render_outline(index.units, char_budget=1_500)
+
+    assert outline.complete is False
+    assert 0 < len(outline.refs) < len(index.units)
+    assert all(ref in outline.text for ref in outline.refs)
+
+
+def test_dropping_deep_levels_is_reported_as_incomplete() -> None:
+    index = index_of(_big_doc_json(sections=30))
+    outline = render_outline(index.units, char_budget=2_000)
+
+    assert outline.complete is False
+    assert all(u.level == 0 or u.level == 1 for u in index.units if u.ref in outline.refs)
+
+
+def test_a_map_that_fits_is_complete() -> None:
+    index = index_of(_big_doc_json(sections=2, depth_two_per_section=1))
+    outline = render_outline(index.units)
+
+    assert outline.complete is True
+    assert outline.refs == {u.ref for u in index.units}

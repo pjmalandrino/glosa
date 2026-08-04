@@ -73,6 +73,14 @@ class Element:
     bbox: BBox | None = None
     provs: tuple[Mapping[str, Any], ...] = ()
     """Opaque host provenance rows, passed through untouched."""
+    summary: str = ""
+    """Enrichment written by the host's pipeline, when it ran.
+
+    This is the signal PageIndex builds its whole index around and that
+    `docling-agent`'s enricher writes into `meta.summary`. It costs an LLM call
+    per node to produce, so glosa never generates it — but when the host has,
+    ignoring it would be throwing away the best retrieval signal available."""
+    keywords: tuple[str, ...] = ()
     parent: str | None = None
     is_section: bool = False
     is_furniture: bool = False

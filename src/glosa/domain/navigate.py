@@ -138,7 +138,7 @@ class NavigateStrategy:
                 selection, fallback = await select_unit(
                     self._model,
                     query=query,
-                    units=units,
+                    index=index,
                     candidates=candidates,
                     visited=visited,
                     notes=notes,

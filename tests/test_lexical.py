@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from glosa.domain.lexical import Bm25Index, normalize, tokenize
+from glosa.domain.lexical import Bm25Index, fold, normalize, tokenize
 
 CORPUS = [
     ("scope", "The supplier shall deliver the works described in Annex A."),
@@ -64,9 +64,9 @@ def test_limit_truncates_the_ranking(index: Bm25Index) -> None:
 
 
 def test_missing_terms_flags_what_has_not_been_seen(index: Bm25Index) -> None:
+    """Returns *index* tokens — folded — not the spelling the user typed."""
     missing = index.missing_terms("penalty invoices", ["penalties"])
-    assert "invoices" in missing
-    assert "penalty" not in missing
+    assert missing == frozenset({"invoice"})
 
 
 def test_missing_terms_ignores_words_absent_from_the_whole_corpus(index: Bm25Index) -> None:
@@ -78,3 +78,35 @@ def test_an_empty_corpus_scores_nothing() -> None:
     empty = Bm25Index([])
     assert len(empty) == 0
     assert empty.rank("anything") == []
+
+
+@pytest.mark.parametrize(
+    ("inflected", "base"),
+    [
+        ("penalties", "penalty"),
+        ("livraisons", "livraison"),
+        ("travaux", "travail"),
+        ("journaux", "journal"),
+        ("clauses", "clause"),
+        ("boxes", "box"),
+    ],
+)
+def test_inflections_collapse_onto_one_bucket(inflected: str, base: str) -> None:
+    """Not a linguistic stemmer — a bucket both spellings land in.
+
+    `travail` and `travaux` both fold to `traval`, which is not a word. It does
+    not need to be: the same transform runs on the corpus and on the query.
+    """
+    assert fold(inflected) == fold(base)
+
+
+@pytest.mark.parametrize("token", ["process", "gas", "12.4", "2", "iso"])
+def test_folding_leaves_these_alone(token: str) -> None:
+    """Double-s words, short words and anything numeric are literals."""
+    assert fold(token) == token
+
+
+def test_a_plural_query_finds_a_singular_document() -> None:
+    """The failure this exists to remove."""
+    index = Bm25Index([("clause", "Late delivery incurs a penalty of 2% per week.")])
+    assert index.rank("penalties")[0].ref == "clause"

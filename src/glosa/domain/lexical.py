@@ -43,15 +43,51 @@ def normalize(text: str) -> str:
 
 
 _TOKEN = re.compile(r"[0-9a-z]+(?:[.,][0-9]+)*")
+_HAS_DIGIT = re.compile(r"[0-9]")
+
+
+def fold(token: str) -> str:
+    """Collapse the commonest inflections so a query and a document agree.
+
+    Deliberately *not* a linguistic stemmer: no dependency, no language
+    detection, no verb morphology. It exists to stop the failures that dominate
+    in practice — "penalties" vs "penalty", "livraisons" vs "livraison",
+    "travaux" vs "travail" — and it is applied identically to the corpus and to
+    the query, so *consistency* matters more than correctness. `traval` is not a
+    word; it is a bucket both spellings land in. Tokens holding a digit are
+    never touched: `12.4` and `2` are literals.
+    """
+    if len(token) <= 3 or _HAS_DIGIT.search(token):
+        return token
+
+    if token.endswith("aux"):
+        # Before the generic -x rule, which would leave "travau".
+        token = token[:-3] + "al"
+    elif token.endswith("ies"):
+        token = token[:-3] + "y"
+    elif token.endswith(("ches", "shes", "sses", "xes", "zes")):
+        token = token[:-2]
+    elif token.endswith("ss"):
+        pass
+    elif token.endswith("s") or (token.endswith("x") and len(token) > 4):
+        token = token[:-1]
+
+    # French -ail/-aux collapse onto -al so travail/travaux and
+    # journal/journaux meet at the same stem.
+    if token.endswith("ail"):
+        token = token[:-3] + "al"
+    return token
 
 
 def tokenize(text: str) -> list[str]:
     """Split into comparable tokens, keeping numbers intact.
 
-    `12.4` and `2%` are exactly the tokens a numeric question turns on, so the
+    `12.4` and `2` are exactly the tokens a numeric question turns on, so the
     pattern keeps decimal groups together rather than shattering them.
     """
-    return [t for t in _TOKEN.findall(normalize(text)) if len(t) >= MIN_TOKEN_LEN or t.isdigit()]
+    return [
+        fold(t) for t in _TOKEN.findall(normalize(text)) if len(t) >= MIN_TOKEN_LEN or t.isdigit()
+    ]
 
 
 @dataclass(frozen=True, slots=True)

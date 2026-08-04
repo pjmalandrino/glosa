@@ -12,6 +12,9 @@ from glosa.domain.reading import Reading, Selection
 from glosa.domain.values import RunStatus
 from tests.conftest import FakeChatModel, index_of, pages, prov
 
+WIDE = 1_000.0
+"""A decisiveness threshold nothing reaches, so fanout is purely the config."""
+
 LOOP = HybridConfig(direct_char_threshold=0)
 
 
@@ -104,7 +107,7 @@ async def test_candidates_are_read_concurrently() -> None:
             "Nothing conclusive.",
         ]
     )
-    config = HybridConfig(direct_char_threshold=0, fanout=3, max_steps=3)
+    config = HybridConfig(direct_char_threshold=0, fanout=3, max_steps=3, decisive_ratio=WIDE)
     await HybridStrategy(model, config).run(index_of(document_json), "works delivery invoices")
 
     assert peak == 3, f"expected three concurrent reads, saw {peak}"
@@ -129,7 +132,7 @@ async def test_steps_follow_retrieval_order_not_completion_order() -> None:
             "Nothing conclusive.",
         ]
     )
-    config = HybridConfig(direct_char_threshold=0, fanout=3, max_steps=3)
+    config = HybridConfig(direct_char_threshold=0, fanout=3, max_steps=3, decisive_ratio=WIDE)
     trace = await HybridStrategy(model, config).run(
         index_of(document_json), "works delivery invoices"
     )
@@ -146,7 +149,7 @@ async def test_the_best_ranked_unit_wins_a_tie() -> None:
             Reading(sufficient=True, response="from the runner-up"),
         ]
     )
-    config = HybridConfig(direct_char_threshold=0, fanout=2)
+    config = HybridConfig(direct_char_threshold=0, fanout=2, decisive_ratio=WIDE)
     trace = await HybridStrategy(model, config).run(index_of(document_json), "delivery invoices")
 
     assert trace.answer == "from the top-ranked section"
@@ -205,7 +208,7 @@ async def test_two_absent_votes_end_the_run_honestly() -> None:
             "This document does not discuss cats.",
         ]
     )
-    config = HybridConfig(direct_char_threshold=0, fanout=2)
+    config = HybridConfig(direct_char_threshold=0, fanout=2, decisive_ratio=WIDE)
     trace = await HybridStrategy(model, config).run(
         index_of(document_json), "works delivery invoices"
     )
@@ -222,7 +225,7 @@ async def test_the_batch_shrinks_to_the_remaining_budget() -> None:
             "Nothing conclusive.",
         ]
     )
-    config = HybridConfig(direct_char_threshold=0, fanout=3, max_steps=2)
+    config = HybridConfig(direct_char_threshold=0, fanout=3, max_steps=2, decisive_ratio=WIDE)
     trace = await HybridStrategy(model, config).run(
         index_of(document_json), "works delivery invoices"
     )
@@ -239,7 +242,7 @@ async def test_one_failing_read_does_not_lose_the_round() -> None:
             Reading(sufficient=True, response="survived"),
         ]
     )
-    config = HybridConfig(direct_char_threshold=0, fanout=2)
+    config = HybridConfig(direct_char_threshold=0, fanout=2, decisive_ratio=WIDE)
     trace = await HybridStrategy(model, config).run(index_of(document_json), "delivery invoices")
 
     assert trace.status is RunStatus.ANSWERED
@@ -250,7 +253,7 @@ async def test_one_failing_read_does_not_lose_the_round() -> None:
 async def test_a_whole_round_failing_surfaces_the_error() -> None:
     document_json = _contract_json()
     model = FakeChatModel([RuntimeError("backend down"), RuntimeError("still down")])
-    config = HybridConfig(direct_char_threshold=0, fanout=2)
+    config = HybridConfig(direct_char_threshold=0, fanout=2, decisive_ratio=WIDE)
 
     try:
         await HybridStrategy(model, config).run(index_of(document_json), "delivery invoices")
@@ -272,3 +275,77 @@ async def test_an_empty_document_is_reported_not_answered() -> None:
     empty = DoclingDocument(name="empty").model_dump_json()
     trace = await HybridStrategy(FakeChatModel([])).run(index_of(empty), "q")
     assert trace.status is RunStatus.NOT_IN_DOCUMENT
+
+
+# -- adaptive fanout and gap-driven re-query ----------------------------------
+
+
+async def test_a_decisive_shortlist_is_read_alone() -> None:
+    """Fanout buys breadth when the ranking is flat. When one section clearly
+    wins, spending three calls to confirm it is waste."""
+    document_json = _contract_json()
+    model = FakeChatModel([Reading(sufficient=True, response="2% per week.")])
+    config = HybridConfig(direct_char_threshold=0, fanout=3, decisive_ratio=1.0)
+
+    trace = await HybridStrategy(model, config).run(
+        index_of(document_json), "late delivery penalty"
+    )
+
+    assert len(trace.steps) == 1
+    assert trace.llm_calls == 1
+
+
+async def test_a_flat_shortlist_is_read_broadly() -> None:
+    document_json = _contract_json()
+    model = FakeChatModel(
+        [
+            Reading(sufficient=False, response="a"),
+            Reading(sufficient=False, response="b"),
+            Reading(sufficient=False, response="c"),
+            "Nothing conclusive.",
+        ]
+    )
+    config = HybridConfig(direct_char_threshold=0, fanout=3, max_steps=3, decisive_ratio=WIDE)
+
+    trace = await HybridStrategy(model, config).run(
+        index_of(document_json), "works delivery invoices"
+    )
+
+    assert len(trace.steps) == 3
+
+
+async def test_the_second_round_searches_for_what_is_missing() -> None:
+    """Upstream repeats the same query forever. The reader just said what it
+    lacked; that is what the next lookup should be about."""
+    document_json = _contract_json()
+    model = FakeChatModel(
+        [
+            Reading(sufficient=False, response="Scope is silent; look for invoicing terms."),
+            Reading(sufficient=True, response="Payable within 30 days."),
+        ]
+    )
+    config = HybridConfig(direct_char_threshold=0, fanout=1, decisive_ratio=WIDE)
+
+    trace = await HybridStrategy(model, config).run(index_of(document_json), "works")
+
+    assert trace.status is RunStatus.ANSWERED
+    assert trace.steps[0].title == "Scope of works"
+    assert trace.steps[1].title == "Invoicing", "the stated gap steered round two"
+
+
+async def test_retrieval_stands_aside_once_every_query_term_has_been_read() -> None:
+    """More term matching cannot help; the model's judgement can."""
+    document_json = _contract_json()
+    refs = _refs(document_json)
+    model = FakeChatModel(
+        [
+            Reading(sufficient=False, response="seen it"),
+            Selection(reason="structure suggests invoicing", ref=refs[2]),
+            Reading(sufficient=True, response="30 days."),
+        ]
+    )
+    config = HybridConfig(direct_char_threshold=0, fanout=1, decisive_ratio=WIDE, gap_notes=0)
+
+    trace = await HybridStrategy(model, config).run(index_of(document_json), "liquidated damages")
+
+    assert trace.steps[1].reason == "structure suggests invoicing"
