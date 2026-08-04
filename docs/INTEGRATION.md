@@ -126,11 +126,11 @@ numbers, TOPLEFT bounding boxes and refs for everything read:
 ```python
 trace = await runner.run_trace(document_json=doc_json, query=q)
 for step in trace.steps:
-    step.node_ids          # ('elem::#/texts/4', 'elem::#/groups/1', …)
+    step.node_ids  # ('elem::#/texts/4', 'elem::#/groups/1', …)
     for span in step.spans:
-        span.node_id       # the Cytoscape node — select it, no mapping needed
-        span.page_no       # page for the canvas
-        span.bbox          # TOPLEFT (l, t, r, b), or None when unknown
+        span.node_id  # the Cytoscape node — select it, no mapping needed
+        span.page_no  # page for the canvas
+        span.bbox  # TOPLEFT (l, t, r, b), or None when unknown
 ```
 
 `step.node_ids` is the set of graph nodes the step actually read. Highlighting

@@ -2,24 +2,52 @@
 
 Docling Studio (and anything else built against `docling-agent`'s `RAGResult`)
 consumes exactly `iteration / section_ref / reason / section_text_length /
-can_answer / response`. Keeping that projection in one small module means the
-native trace can grow without ever breaking an existing viewer.
+can_answer / response`. That is a **wire** concern, not a domain one, which is
+why the pydantic models live here in the adapter layer and not in
+`glosa.domain.values`: the native trace can grow without ever breaking an
+existing viewer, and the domain stays free of serialization types.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Protocol
 
-from glosa.types import LegacyIteration, LegacyResult, RunStatus
+from pydantic import BaseModel
+
+from glosa.domain.values import RunStatus
 
 if TYPE_CHECKING:
-    from glosa.types import Trace
+    from glosa.domain.values import Trace
 
 STATUS_PREFIX = {
     RunStatus.NOT_IN_DOCUMENT: "[not answered — this document does not cover the question]",
     RunStatus.INSUFFICIENT_EVIDENCE: "[partial answer — the document did not fully answer this]",
     RunStatus.BUDGET_EXHAUSTED: "[partial answer — the run hit its budget before converging]",
 }
+
+
+class LegacyIteration(BaseModel):
+    """Wire-compatible with `docling_agent.agent.rag_models.RAGIteration`.
+
+    Field names and order are load-bearing: Docling Studio does
+    `ReasoningIteration(**it.model_dump())`. Do not rename or add fields —
+    add them to `glosa.domain.values.Step` instead.
+    """
+
+    iteration: int
+    section_ref: str
+    reason: str
+    section_text_length: int
+    can_answer: bool
+    response: str
+
+
+class LegacyResult(BaseModel):
+    """Wire-compatible with `docling_agent.agent.rag_models.RAGResult`."""
+
+    answer: str
+    iterations: list[LegacyIteration]
+    converged: bool
 
 
 class IterationFactory(Protocol):

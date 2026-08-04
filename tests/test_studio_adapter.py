@@ -6,13 +6,14 @@ from dataclasses import dataclass
 
 import pytest
 
+from glosa.adapters.legacy import LegacyIteration
 from glosa.adapters.studio import GlosaReasoningRunner
-from glosa.document.index import DocIndex
-from glosa.errors import ReasoningParseError
-from glosa.strategy.navigate import NavigateConfig, Reading, Selection
-from glosa.studio.projection import node_id_for
-from glosa.types import LegacyIteration, RunStatus, Step, Trace
-from tests.conftest import FakeChatModel
+from glosa.domain.errors import ReasoningParseError
+from glosa.domain.navigate import NavigateConfig, Reading, Selection
+from glosa.domain.values import RunStatus, Step, Trace
+from glosa.infra.docling.projection import DoclingProjector, node_id_for
+from glosa.ports.document import DocumentProjection
+from tests.conftest import FakeChatModel, index_of
 
 LOOP = NavigateConfig(direct_char_threshold=0)
 
@@ -79,7 +80,7 @@ async def test_host_factories_produce_the_hosts_own_types(flat_json: str) -> Non
     assert isinstance(result, StudioResult)
     assert isinstance(result.iterations[0], StudioIteration)
     # The anchor is a real projected node, never a synthetic ref like `#/body`.
-    projected = DocIndex.from_json(flat_json).projection.node_ids
+    projected = index_of(flat_json).projection.node_ids
     assert node_id_for(result.iterations[0].section_ref) in projected
 
 
@@ -125,19 +126,21 @@ async def test_parse_failures_are_raised_as_the_hosts_exception(
 # --- caching and overrides ---------------------------------------------------
 
 
-async def test_the_document_is_parsed_once_across_queries(
-    flat_json: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
+class CountingProjector:
+    """A `DocumentProjector` that records how often it parsed."""
+
+    def __init__(self) -> None:
+        self.inner = DoclingProjector()
+        self.calls = 0
+
+    def project(self, document_json: str) -> DocumentProjection:
+        self.calls += 1
+        return self.inner.project(document_json)
+
+
+async def test_the_document_is_parsed_once_across_queries(flat_json: str) -> None:
     """Studio asks several questions of the same stored analysis."""
-    calls = {"n": 0}
-    original = DocIndex.from_json
-
-    def counted(document_json: str, **kwargs: object) -> DocIndex:
-        calls["n"] += 1
-        return original(document_json, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(DocIndex, "from_json", staticmethod(counted))
-
+    projector = CountingProjector()
     payload = flat_json
     runner = GlosaReasoningRunner(
         FakeChatModel(
@@ -145,12 +148,13 @@ async def test_the_document_is_parsed_once_across_queries(
                 Reading(sufficient=True, response="a"),
                 Reading(sufficient=True, response="b"),
             ]
-        )
+        ),
+        projector=projector,
     )
     await runner.run(document_json=payload, query="one")
     await runner.run(document_json=payload, query="two")
 
-    assert calls["n"] == 1
+    assert projector.calls == 1
 
 
 async def test_the_cache_is_bounded(flat_json: str, nested_json: str) -> None:
@@ -181,7 +185,7 @@ async def test_run_trace_exposes_provenance_the_legacy_shape_drops(
     runner = GlosaReasoningRunner(
         FakeChatModel(
             [
-                Selection(reason="here", ref=DocIndex.from_json(flat_json).units[1].ref),
+                Selection(reason="here", ref=index_of(flat_json).units[1].ref),
                 Reading(sufficient=True, response="12.4M"),
             ]
         ),

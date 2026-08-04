@@ -1,7 +1,7 @@
-"""The document object glosa reads: Docling Studio's projection of it.
+"""Docling adapter: a serialized `DoclingDocument` → a `DocumentProjection`.
 
-`StudioProjection` is the same node set, the same ids, the same reading order
-and the same section scoping that Studio's graph view and canvas overlay use:
+This is where every Docling- and Studio-specific assumption lives, and the only
+place allowed to know them:
 
 * nodes are `iter_items` minus `skip_refs`, so InlineGroup style runs and
   picture-internal labels never appear;
@@ -9,11 +9,11 @@ and the same section scoping that Studio's graph view and canvas overlay use:
 * reading order is `dfs_order` — the NEXT chain the graph draws;
 * a **section** runs from one `SectionHeader` to the next along that chain,
   which is exactly the rule the frontend's `computeSectionParents` applies to
-  build its compound nodes. Note there is deliberately *no* level nesting: an
-  `h2` after an `h1` starts a new scope rather than nesting inside it, because
-  that is what the UI shows. Levels are kept for display in the outline only.
+  build its compound nodes. There is deliberately *no* level nesting: an `h2`
+  after an `h1` starts a new scope rather than nesting inside it, because that
+  is what the UI shows. Levels survive for display in the outline only.
 
-Consequence: every ref glosa can put in a trace resolves to a node the UI
+Consequence: every ref the domain can put in a trace resolves to a node the UI
 already has, and the set of nodes a step claims to have read is the set the UI
 highlights.
 """
@@ -21,12 +21,12 @@ highlights.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from glosa.errors import DocumentParseError
-from glosa.studio.render import render_item
-from glosa.studio.tree import (
+from glosa.domain.errors import DocumentParseError
+from glosa.domain.values import Element, Scope
+from glosa.infra.docling.render import render_item
+from glosa.infra.docling.tree import (
     FURNITURE_LABELS,
     BundledTreeReader,
     dfs_order,
@@ -37,15 +37,16 @@ from glosa.studio.tree import (
     iter_provs,
     parent_ref,
 )
-from glosa.types import BBox
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
+    from collections.abc import Sequence
 
-    from glosa.studio.ports import TreeReader
+    from glosa.domain.values import BBox
+    from glosa.ports.document import DocumentProjection, TreeReader
 
 NODE_PREFIX = "elem::"
 PAGE_PREFIX = "page::"
+PAGE_REF_PREFIX = "#/pages/"
 
 
 def node_id_for(self_ref: str) -> str:
@@ -57,72 +58,29 @@ def page_node_id(page_no: int) -> str:
     return f"{PAGE_PREFIX}{page_no}"
 
 
-@dataclass(frozen=True, slots=True)
-class Element:
-    """One node of the projected document."""
-
-    self_ref: str
-    node_id: str
-    docling_label: str
-    graph_label: str
-    text: str
-    order: int
-    level: int | None = None
-    page_no: int | None = None
-    bbox: BBox | None = None
-    provs: tuple[dict[str, Any], ...] = ()
-    parent: str | None = None
-    is_section: bool = False
-    is_furniture: bool = False
-
-    @property
-    def pages(self) -> tuple[int, ...]:
-        seen: dict[int, None] = {}
-        for prov in self.provs:
-            page = prov.get("page_no")
-            if isinstance(page, int):
-                seen[page] = None
-        return tuple(seen)
+def page_ref(page_no: int) -> str:
+    return f"{PAGE_REF_PREFIX}{page_no}"
 
 
-@dataclass(frozen=True, slots=True)
-class Scope:
-    """A section: its heading (if any) and the elements that belong to it."""
+class DoclingProjection:
+    """Parsed, collapsed, ordered view of a `document_json` blob.
 
-    anchor: Element
-    members: tuple[Element, ...]
-
-    @property
-    def ref(self) -> str:
-        return self.anchor.self_ref
-
-    @property
-    def elements(self) -> tuple[Element, ...]:
-        """Anchor first, then members.
-
-        For a section the anchor is the heading; for content that precedes the
-        first heading it is that content's own first element. Either way the
-        anchor is part of what gets read.
-        """
-        return (self.anchor, *self.members)
-
-
-class StudioProjection:
-    """Parsed, collapsed, ordered view of a `document_json` blob."""
+    Implements `glosa.ports.document.DocumentProjection`.
+    """
 
     def __init__(self, doc_data: dict[str, Any], *, tree_reader: TreeReader | None = None) -> None:
         self.doc_data = doc_data
         self._reader: TreeReader = tree_reader or BundledTreeReader()
-        self.pages: dict[int, float | None] = {}
-        self.page_widths: dict[int, float | None] = {}
-        self.elements: tuple[Element, ...] = ()
+        self._page_heights: dict[int, float | None] = {}
+        self._page_widths: dict[int, float | None] = {}
+        self._elements: tuple[Element, ...] = ()
         self.by_ref: dict[str, Element] = {}
         self._build()
 
     @classmethod
     def from_json(
         cls, document_json: str, *, tree_reader: TreeReader | None = None
-    ) -> StudioProjection:
+    ) -> DoclingProjection:
         try:
             doc_data = json.loads(document_json)
         except (TypeError, ValueError) as exc:
@@ -136,8 +94,8 @@ class StudioProjection:
     def _build(self) -> None:
         for page in iter_pages(self.doc_data):
             page_no = page["page_no"]
-            self.pages[page_no] = _as_float(page.get("height"))
-            self.page_widths[page_no] = _as_float(page.get("width"))
+            self._page_heights[page_no] = _as_float(page.get("height"))
+            self._page_widths[page_no] = _as_float(page.get("width"))
 
         skip_refs, inline_meta = self._reader.build_collapse_index(self.doc_data)
         raw_by_ref: dict[str, dict[str, Any]] = {}
@@ -171,12 +129,13 @@ class StudioProjection:
             element = Element(
                 self_ref=ref,
                 node_id=node_id_for(ref),
-                docling_label=label,
-                graph_label=element_label(label),
                 text=text,
                 order=order,
+                docling_label=label,
+                graph_label=element_label(label),
                 level=level,
                 page_no=page_no,
+                pages=_pages_of(provs),
                 bbox=bbox,
                 provs=tuple(provs),
                 parent=parent_ref(item),
@@ -186,7 +145,7 @@ class StudioProjection:
             elements.append(element)
             self.by_ref[ref] = element
 
-        self.elements = tuple(elements)
+        self._elements = tuple(elements)
 
     def _locate(self, provs: Sequence[dict[str, Any]]) -> tuple[int | None, BBox | None]:
         if not provs:
@@ -194,10 +153,10 @@ class StudioProjection:
         first = provs[0]
         page_no = first.get("page_no")
         page_no = page_no if isinstance(page_no, int) else None
-        height = self.pages.get(page_no) if page_no is not None else None
+        height = self._page_heights.get(page_no) if page_no is not None else None
         return page_no, to_topleft(first, height)
 
-    # -- queries --------------------------------------------------------------
+    # -- DocumentProjection ---------------------------------------------------
 
     @property
     def title(self) -> str:
@@ -205,13 +164,20 @@ class StudioProjection:
         return str(name) if name else "Document"
 
     @property
+    def elements(self) -> tuple[Element, ...]:
+        return self._elements
+
+    @property
     def node_ids(self) -> frozenset[str]:
-        """Every `elem::` id in the projection — what a trace may reference."""
-        return frozenset(element.node_id for element in self.elements)
+        return frozenset(element.node_id for element in self._elements)
 
     @property
     def has_sections(self) -> bool:
-        return any(element.is_section for element in self.elements)
+        return any(element.is_section for element in self._elements)
+
+    @property
+    def page_numbers(self) -> tuple[int, ...]:
+        return tuple(sorted(self._page_heights))
 
     def readable(self, *, include_furniture: bool = False) -> tuple[Element, ...]:
         """Elements worth putting in front of a model.
@@ -221,8 +187,8 @@ class StudioProjection:
         noise, so they are out by default.
         """
         if include_furniture:
-            return self.elements
-        return tuple(e for e in self.elements if not e.is_furniture)
+            return self._elements
+        return tuple(e for e in self._elements if not e.is_furniture)
 
     def scopes(self, *, include_furniture: bool = False) -> tuple[Scope, ...]:
         """Section scopes, following the NEXT chain exactly as the UI does."""
@@ -255,8 +221,27 @@ class StudioProjection:
             e for e in self.readable(include_furniture=include_furniture) if page_no in e.pages
         )
 
-    def iter_page_numbers(self) -> Iterator[int]:
-        yield from sorted(self.pages)
+    def page_ref(self, page_no: int) -> str:
+        return page_ref(page_no)
+
+    def page_node_id(self, page_no: int) -> str:
+        return page_node_id(page_no)
+
+
+class DoclingProjector:
+    """`DocumentProjector` over serialized `DoclingDocument` payloads.
+
+    Args:
+        tree_reader: The host's own tree reader. Docling Studio wires one at
+            `main.py:321`; passing it means the collapse rules have a single
+            implementation in the deployment.
+    """
+
+    def __init__(self, *, tree_reader: TreeReader | None = None) -> None:
+        self._tree_reader = tree_reader
+
+    def project(self, document_json: str) -> DocumentProjection:
+        return DoclingProjection.from_json(document_json, tree_reader=self._tree_reader)
 
 
 def to_topleft(prov: dict[str, Any], page_height: float | None) -> BBox | None:
@@ -281,6 +266,15 @@ def to_topleft(prov: dict[str, Any], page_height: float | None) -> BBox | None:
     if right <= left or bottom <= top:
         return None
     return (left, top, right, bottom)
+
+
+def _pages_of(provs: Sequence[dict[str, Any]]) -> tuple[int, ...]:
+    seen: dict[int, None] = {}
+    for prov in provs:
+        page = prov.get("page_no")
+        if isinstance(page, int):
+            seen[page] = None
+    return tuple(seen)
 
 
 def _is_furniture(item: dict[str, Any], label: str) -> bool:

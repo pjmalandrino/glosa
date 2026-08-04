@@ -1,42 +1,56 @@
-"""glosa — a grounded document-reading engine for `DoclingDocument`."""
+"""glosa — a grounded document-reading engine for Docling Studio.
 
-from glosa.adapters.legacy import to_legacy
+Layered hexagonally: `domain` (pure logic) depends only on `ports`
+(protocols); `infra` and `adapters` implement them. This module re-exports the
+public surface so callers need not know the layout.
+"""
+
+from glosa.adapters.legacy import LegacyIteration, LegacyResult, to_legacy
 from glosa.adapters.studio import GlosaReasoningRunner
-from glosa.document.index import DocIndex, Unit
-from glosa.errors import (
+from glosa.domain.budget import Budget
+from glosa.domain.errors import (
     BackendError,
     BudgetExhausted,
     DocumentParseError,
     GlosaError,
     ReasoningParseError,
 )
-from glosa.llm.ollama import OllamaChatModel
-from glosa.llm.openai import OpenAIChatModel, StructuredMode
-from glosa.llm.port import ChatModel, Message
-from glosa.strategy.navigate import NavigateConfig, NavigateStrategy
-from glosa.studio.ports import TreeReader
-from glosa.studio.projection import Element, Scope, StudioProjection, node_id_for, page_node_id
-from glosa.studio.tree import BundledTreeReader
-from glosa.types import (
+from glosa.domain.index import DocIndex, Unit
+from glosa.domain.navigate import NavigateConfig, NavigateStrategy
+from glosa.domain.values import (
+    Element,
     Excerpt,
-    LegacyIteration,
-    LegacyResult,
     RunStatus,
+    Scope,
     Span,
     Step,
     Trace,
     UnitKind,
 )
+from glosa.infra.docling.projection import (
+    DoclingProjection,
+    DoclingProjector,
+    node_id_for,
+    page_node_id,
+)
+from glosa.infra.llm.ollama import OllamaChatModel
+from glosa.infra.llm.openai import OpenAIChatModel, StructuredMode
+from glosa.ports.chat import ChatModel, Message
+from glosa.ports.document import DocumentProjection, DocumentProjector, TreeReader
 
 __version__ = "0.1.0.dev0"
 
 __all__ = [
     "BackendError",
+    "Budget",
     "BudgetExhausted",
-    "BundledTreeReader",
     "ChatModel",
     "DocIndex",
+    "DoclingProjection",
+    "DoclingProjector",
     "DocumentParseError",
+    "DocumentProjection",
+    "DocumentProjector",
     "Element",
     "Excerpt",
     "GlosaError",
@@ -54,7 +68,6 @@ __all__ = [
     "Span",
     "Step",
     "StructuredMode",
-    "StudioProjection",
     "Trace",
     "TreeReader",
     "Unit",

@@ -1,25 +1,24 @@
-"""`DocIndex` — retrieval units over Docling Studio's document projection.
+"""`DocIndex` — retrieval units over a projected document.
 
-Every unit is anchored on a node that exists in the host's graph, and every
-excerpt records the exact node ids it was built from. Nothing here re-derives
-document structure: that all comes from `glosa.studio.projection`, which
-mirrors Studio's own collapse rules, reading order and section scoping.
+Pure domain logic: how to slice a document into things worth reading, how big
+each one is, how to cut an excerpt to a budget. It works against the
+`DocumentProjection` port and never learns what produced it — no JSON, no
+Docling, no host-specific id format (page refs and node ids come from the
+projection, which owns those conventions).
 """
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from glosa.studio.projection import StudioProjection, page_node_id
-from glosa.types import Excerpt, ExcerptPart, UnitKind
+from glosa.domain.values import Excerpt, ExcerptPart, UnitKind
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from glosa.studio.ports import TreeReader
-    from glosa.studio.projection import Element
+    from glosa.domain.values import Element
+    from glosa.ports.document import DocumentProjection
 
 DEFAULT_EXCERPT_BUDGET = 8_000
 TRUNCATION_MARKER = "\n\n[… excerpt truncated to fit the context budget …]"
@@ -31,8 +30,8 @@ _MIN_PARTIAL_CHARS = 200
 class Unit:
     """Something the agent can decide to read.
 
-    `ref` and `node_id` both address the host's graph — `ref` is the Docling
-    `self_ref` the legacy trace field carries, `node_id` is the Cytoscape id.
+    `ref` and `node_id` both address the host's graph — `ref` is the ref the
+    legacy trace field carries, `node_id` is the graph node id.
     """
 
     ref: str
@@ -64,35 +63,16 @@ class DocIndex:
 
     def __init__(
         self,
-        projection: StudioProjection,
+        projection: DocumentProjection,
         *,
-        doc_hash: str = "",
         include_furniture: bool = False,
     ) -> None:
         self.projection = projection
-        self.doc_hash = doc_hash
         self._include_furniture = include_furniture
         self._units: dict[str, Unit] = {}
         self._elements: dict[str, tuple[Element, ...]] = {}
         self._excerpts: dict[tuple[str, int], Excerpt] = {}
         self._build()
-
-    @classmethod
-    def from_json(
-        cls,
-        document_json: str,
-        *,
-        tree_reader: TreeReader | None = None,
-        include_furniture: bool = False,
-    ) -> DocIndex:
-        """Parse a `document_json` blob into an index.
-
-        Raises `DocumentParseError` on anything that is not a serialized
-        `DoclingDocument`, so callers have one exception type to map.
-        """
-        projection = StudioProjection.from_json(document_json, tree_reader=tree_reader)
-        digest = hashlib.sha256(document_json.encode("utf-8")).hexdigest()
-        return cls(projection, doc_hash=digest, include_furniture=include_furniture)
 
     # -- construction ---------------------------------------------------------
 
@@ -103,7 +83,7 @@ class DocIndex:
         if self.projection.has_sections:
             self._build_sections()
             return
-        if self.projection.pages:
+        if self.projection.page_numbers:
             self._build_pages()
             if self._units:
                 return
@@ -130,17 +110,17 @@ class DocIndex:
             )
 
     def _build_pages(self) -> None:
-        for order, page_no in enumerate(self.projection.iter_page_numbers()):
+        for order, page_no in enumerate(self.projection.page_numbers):
             elements = self.projection.page_elements(
                 page_no, include_furniture=self._include_furniture
             )
             if not elements:
                 continue
-            ref = f"#/pages/{page_no}"
+            ref = self.projection.page_ref(page_no)
             self._elements[ref] = elements
             self._units[ref] = Unit(
                 ref=ref,
-                node_id=page_node_id(page_no),
+                node_id=self.projection.page_node_id(page_no),
                 title=_clip(" ".join(e.text for e in elements[:3])) or f"Page {page_no}",
                 kind=UnitKind.PAGE,
                 order=order,
@@ -220,7 +200,7 @@ class DocIndex:
         the host's graph; the node ids of everything read travel with it.
         """
         elements = self.projection.readable(include_furniture=self._include_furniture)
-        ref = elements[0].self_ref if elements else "#/body"
+        ref = elements[0].self_ref if elements else ""
         return _assemble(
             ref=ref, kind=UnitKind.DOCUMENT, elements=elements, char_budget=char_budget
         )

@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from docling_core.types.doc import DocItemLabel, DoclingDocument
 
-from glosa.document.index import DocIndex
-from glosa.document.outline import render_outline
-from tests.conftest import pages, prov
+from glosa.domain.outline import render_outline
+from tests.conftest import index_of, pages, prov
 
 
 def _big_doc_json(sections: int, depth_two_per_section: int = 3) -> str:
@@ -31,7 +30,7 @@ def _big_doc_json(sections: int, depth_two_per_section: int = 3) -> str:
 
 
 def test_every_unit_is_listed_with_its_ref(flat_json: str) -> None:
-    index = DocIndex.from_json(flat_json)
+    index = index_of(flat_json)
     text = render_outline(index.units)
     for unit in index.units:
         assert unit.ref in text
@@ -39,7 +38,7 @@ def test_every_unit_is_listed_with_its_ref(flat_json: str) -> None:
 
 
 def test_visited_units_are_marked(flat_json: str) -> None:
-    index = DocIndex.from_json(flat_json)
+    index = index_of(flat_json)
     target = index.units[1].ref
     line = next(
         line
@@ -50,7 +49,7 @@ def test_visited_units_are_marked(flat_json: str) -> None:
 
 
 def test_deepest_levels_are_dropped_before_anything_is_elided() -> None:
-    index = DocIndex.from_json(_big_doc_json(sections=30))
+    index = index_of(_big_doc_json(sections=30))
     text = render_outline(index.units, char_budget=2_000)
     assert len(text) <= 2_000
     assert "Chapter 0" in text
@@ -60,7 +59,7 @@ def test_deepest_levels_are_dropped_before_anything_is_elided() -> None:
 
 def test_elision_is_announced_with_a_count() -> None:
     """A silently shortened map reads as a complete one. It must not."""
-    index = DocIndex.from_json(_big_doc_json(sections=200, depth_two_per_section=0))
+    index = index_of(_big_doc_json(sections=200, depth_two_per_section=0))
     text = render_outline(index.units, char_budget=1_500)
     assert len(text) <= 1_500
     assert "omitted from this map" in text

@@ -14,8 +14,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from glosa.studio.ports import TreeReader
-from glosa.studio.tree import (
+from glosa.infra.docling.tree import (
     LABEL_MAP,
     BundledTreeReader,
     build_collapse_index,
@@ -25,6 +24,7 @@ from glosa.studio.tree import (
     iter_pages,
     iter_provs,
 )
+from glosa.ports.document import TreeReader
 from tests.conftest import build_flat, build_inline, build_nested, build_picture
 
 

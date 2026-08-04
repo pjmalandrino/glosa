@@ -4,16 +4,16 @@ from __future__ import annotations
 
 from docling_core.types.doc import DocItemLabel, DoclingDocument
 
-from glosa.document.index import DocIndex
-from glosa.strategy.navigate import NavigateConfig, NavigateStrategy, Reading, Selection
-from glosa.types import RunStatus, UnitKind
-from tests.conftest import FakeChatModel, pages, prov
+from glosa.domain.index import DocIndex
+from glosa.domain.navigate import NavigateConfig, NavigateStrategy, Reading, Selection
+from glosa.domain.values import RunStatus, UnitKind
+from tests.conftest import FakeChatModel, index_of, pages, prov
 
 LOOP = NavigateConfig(direct_char_threshold=0)
 
 
 def _index(document_json: str) -> DocIndex:
-    return DocIndex.from_json(document_json)
+    return index_of(document_json)
 
 
 def _refs(document_json: str) -> list[str]:

@@ -9,11 +9,11 @@ import httpx
 import pytest
 from pydantic import BaseModel
 
-from glosa.errors import BackendError, ReasoningParseError
-from glosa.llm.ollama import OllamaChatModel
-from glosa.llm.openai import OpenAIChatModel, StructuredMode
-from glosa.llm.port import ChatModel, user
-from glosa.llm.schema import extract_json, to_strict_schema
+from glosa.domain.errors import BackendError, ReasoningParseError
+from glosa.infra.llm.ollama import OllamaChatModel
+from glosa.infra.llm.openai import OpenAIChatModel, StructuredMode
+from glosa.infra.llm.schema import extract_json, to_strict_schema
+from glosa.ports.chat import ChatModel, user
 
 
 class Answer(BaseModel):

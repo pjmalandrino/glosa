@@ -16,9 +16,8 @@ from __future__ import annotations
 from itertools import pairwise
 from typing import Any
 
-from glosa.document.index import DocIndex
-from glosa.studio.projection import node_id_for
-from glosa.studio.tree import (
+from glosa.infra.docling.projection import node_id_for
+from glosa.infra.docling.tree import (
     build_collapse_index,
     dfs_order,
     element_label,
@@ -26,7 +25,7 @@ from glosa.studio.tree import (
     iter_items,
     parent_ref,
 )
-from tests.conftest import build_flat, build_nested, build_picture, build_preamble
+from tests.conftest import build_flat, build_nested, build_picture, build_preamble, index_of
 
 SECTION_LABEL = "SectionHeader"
 
@@ -134,7 +133,7 @@ def _assert_scoping_matches(document_json: str) -> None:
     nodes, edges = _graph(doc_data)
     expected = _resolve_sections(nodes, edges)
 
-    index = DocIndex.from_json(document_json, include_furniture=True)
+    index = index_of(document_json, include_furniture=True)
     actual: dict[str, str | None] = {}
     for unit in index.units:
         for ref in unit.element_refs:
@@ -173,7 +172,7 @@ def test_scoping_matches_the_frontend_with_a_figure() -> None:
 def test_an_h2_after_an_h1_opens_a_new_scope_it_does_not_nest() -> None:
     """The rule that most obviously differs from a level-stack reading."""
     document_json = build_flat().model_dump_json()
-    index = DocIndex.from_json(document_json)
+    index = index_of(document_json)
 
     risks = next(u for u in index.units if u.title == "Risks")
     legal = next(u for u in index.units if u.title == "Legal")

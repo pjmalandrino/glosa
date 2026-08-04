@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Collection, Sequence
 
-    from glosa.document.index import Unit
+    from glosa.domain.index import Unit
 
 DEFAULT_OUTLINE_BUDGET = 6_000
 _MIN_KEPT = 8

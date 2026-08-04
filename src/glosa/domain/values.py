@@ -1,23 +1,23 @@
-"""Core value types.
+"""Domain value types.
 
-Two layers live here on purpose:
+Pure data: no I/O, no framework, and — importantly — no knowledge of how the
+host serializes a document. `Element` carries a `node_id` and a `bbox` because
+the domain needs to *say where something is*; it never learns how those were
+derived from Docling's JSON. That stays in `glosa.infra.docling`.
 
-* the **native** types (`Span`, `Excerpt`, `Step`, `Trace`) carry everything
-  glosa knows, including provenance we intend to surface later;
-* the **legacy** types (`LegacyIteration`, `LegacyResult`) carry exactly the six
-  fields Docling Studio's `ReasoningIteration` expects, so a `.model_dump()`
-  splat into Studio's dataclass keeps working unchanged.
-
-Native types are frozen dataclasses (cheap, immutable). Legacy types are
-pydantic models because the receiving code calls `.model_dump()` on them.
+`provs` is the one deliberate exception: opaque, host-shaped provenance rows
+passed straight through for consumers that want them. Nothing in the domain
+looks inside.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 BBox = tuple[float, float, float, float]
 """``(left, top, right, bottom)`` in TOPLEFT origin — the convention Docling
@@ -51,12 +51,64 @@ class UnitKind(StrEnum):
     DOCUMENT = "document"
 
 
+# --- the document ------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class Element:
+    """One node of the projected document.
+
+    Built by a `DocumentProjector`; the domain only reads it.
+    """
+
+    self_ref: str
+    node_id: str
+    text: str
+    order: int
+    docling_label: str = ""
+    graph_label: str = ""
+    level: int | None = None
+    page_no: int | None = None
+    pages: tuple[int, ...] = ()
+    bbox: BBox | None = None
+    provs: tuple[Mapping[str, Any], ...] = ()
+    """Opaque host provenance rows, passed through untouched."""
+    parent: str | None = None
+    is_section: bool = False
+    is_furniture: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class Scope:
+    """A section: its anchor and the elements that belong to it."""
+
+    anchor: Element
+    members: tuple[Element, ...]
+
+    @property
+    def ref(self) -> str:
+        return self.anchor.self_ref
+
+    @property
+    def elements(self) -> tuple[Element, ...]:
+        """Anchor first, then members.
+
+        For a section the anchor is the heading; for content that precedes the
+        first heading it is that content's own first element. Either way the
+        anchor is part of what gets read.
+        """
+        return (self.anchor, *self.members)
+
+
+# --- what a run produces -------------------------------------------------------
+
+
 @dataclass(frozen=True, slots=True)
 class Span:
     """A located piece of the source document.
 
-    `node_id` is the host's graph id (`elem::<self_ref>`, or `page::<n>`), so a
-    consumer can highlight the node without re-deriving anything.
+    `node_id` is the host's graph id, so a consumer can highlight the node
+    without re-deriving anything.
     """
 
     self_ref: str
@@ -152,28 +204,3 @@ class Trace:
     @property
     def converged(self) -> bool:
         return self.status.converged
-
-
-# --- Legacy projection -------------------------------------------------------
-# Field names and order are load-bearing: Docling Studio does
-# `ReasoningIteration(**it.model_dump())`. Do not rename or add fields here —
-# add them to `Step` instead.
-
-
-class LegacyIteration(BaseModel):
-    """Wire-compatible with `docling_agent.agent.rag_models.RAGIteration`."""
-
-    iteration: int
-    section_ref: str
-    reason: str
-    section_text_length: int
-    can_answer: bool
-    response: str
-
-
-class LegacyResult(BaseModel):
-    """Wire-compatible with `docling_agent.agent.rag_models.RAGResult`."""
-
-    answer: str
-    iterations: list[LegacyIteration]
-    converged: bool

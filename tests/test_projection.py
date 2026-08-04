@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from glosa.document.index import TRUNCATION_MARKER, DocIndex
-from glosa.studio.projection import StudioProjection, node_id_for
+from glosa.domain.index import TRUNCATION_MARKER
+from glosa.infra.docling.projection import DoclingProjection, node_id_for
 from tests.conftest import build_flat, index_of, pages, prov
 
 
 def test_inline_group_is_one_node_not_its_style_runs(inline_json: str) -> None:
     """Studio issue #197. The style runs are in `skip_refs`; emitting one of
     their refs in a trace would highlight nothing in the graph."""
-    projection = StudioProjection.from_json(inline_json)
+    projection = DoclingProjection.from_json(inline_json)
     refs = [e.self_ref for e in projection.elements]
 
     assert "#/groups/0" in refs
@@ -31,7 +31,7 @@ def test_the_collapsed_paragraph_is_what_gets_read(inline_json: str) -> None:
 
 
 def test_picture_children_are_dropped_but_the_caption_is_kept(picture_json: str) -> None:
-    projection = StudioProjection.from_json(picture_json)
+    projection = DoclingProjection.from_json(picture_json)
     texts = " ".join(e.text for e in projection.elements)
 
     assert "NOISE-AXIS-LABEL" not in texts
@@ -51,7 +51,7 @@ def test_tables_render_as_html_so_cells_stay_associated(table_json: str) -> None
 
 
 def test_graph_labels_match_studios_legend(flat_json: str) -> None:
-    projection = StudioProjection.from_json(flat_json)
+    projection = DoclingProjection.from_json(flat_json)
     labels = {e.self_ref: e.graph_label for e in projection.elements}
 
     # `title` and `section_header` both project to SectionHeader — which is
@@ -66,7 +66,7 @@ def test_truncation_is_announced_not_silent() -> None:
     heading = doc.add_heading(text="Appendix", level=1, prov=prov(2, 500))
     doc.add_text(label="text", text="x" * 5_000, parent=heading, prov=prov(2, 480))
 
-    index = DocIndex.from_json(doc.model_dump_json())
+    index = index_of(doc.model_dump_json())
     appendix = next(u for u in index.units if u.title == "Appendix")
     excerpt = index.excerpt(appendix.ref, char_budget=1_000)
 
@@ -84,7 +84,7 @@ def test_an_element_that_does_not_fit_is_dropped_whole() -> None:
     doc.add_text(label="text", text="a" * 100, parent=heading, prov=prov(1, 700))
     doc.add_text(label="text", text="b" * 100, parent=heading, prov=prov(1, 680))
 
-    index = DocIndex.from_json(doc.model_dump_json())
+    index = index_of(doc.model_dump_json())
     excerpt = index.excerpt(index.units[0].ref, char_budget=120)
 
     assert "b" * 100 not in excerpt.text
@@ -109,5 +109,5 @@ def test_orphan_nodes_stay_addressable() -> None:
         '"texts": [{"self_ref": "#/texts/0", "label": "text", "text": "stranded", '
         '"parent": {"cref": "#/body"}, "children": [], "prov": []}]}'
     )
-    projection = StudioProjection.from_json(payload)
+    projection = DoclingProjection.from_json(payload)
     assert [e.self_ref for e in projection.elements] == ["#/texts/0"]

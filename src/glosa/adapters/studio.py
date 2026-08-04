@@ -1,22 +1,26 @@
-"""`ReasoningRunner` implementation for Docling Studio.
+"""`ReasoningRunner` implementation for Docling Studio — the driving adapter.
 
-Satisfies Studio's `domain.ports.ReasoningRunner` structurally — glosa never
+Satisfies Studio's `domain.ports.ReasoningRunner` structurally: glosa never
 imports Studio, and Studio never imports glosa's types. The three `*_factory`
 arguments let the host hand over its own domain classes, so the runner returns
 `ReasoningResult` / `ReasoningIteration` / `ReasoningParseError` directly and no
 translation adapter is needed on either side.
 
+Being the outermost layer, this module is allowed to know about `infra` — it
+supplies the default `DoclingProjector`. Everything it hands to the domain is a
+port.
+
 Wiring, in Studio's `main.py`:
 
-    from glosa import GlosaReasoningRunner, OllamaChatModel
+    from glosa import GlosaReasoningRunner, OllamaChatModel, DoclingProjector
     from domain.ports import ReasoningParseError
     from domain.value_objects import ReasoningIteration, ReasoningResult
-    from infra.docling_tree import DoclingTreeReader
 
     app.state.reasoning_runner = GlosaReasoningRunner(
         model=OllamaChatModel(base_url=settings.ollama_host,
                               model_id=settings.reasoning_model_id),
-        tree_reader=DoclingTreeReader(),
+        # the DoclingTreeReader already wired at main.py:321
+        projector=DoclingProjector(tree_reader=app.state.tree_reader),
         result_factory=ReasoningResult,
         iteration_factory=ReasoningIteration,
         parse_error_factory=ReasoningParseError,
@@ -29,16 +33,22 @@ import hashlib
 from collections import OrderedDict
 from typing import TYPE_CHECKING, Any, Protocol
 
-from glosa.adapters.legacy import IterationFactory, ResultFactory, to_legacy
-from glosa.document.index import DocIndex
-from glosa.errors import ReasoningParseError
-from glosa.strategy.navigate import NavigateConfig, NavigateStrategy
-from glosa.types import LegacyIteration, LegacyResult
+from glosa.adapters.legacy import (
+    IterationFactory,
+    LegacyIteration,
+    LegacyResult,
+    ResultFactory,
+    to_legacy,
+)
+from glosa.domain.errors import ReasoningParseError
+from glosa.domain.index import DocIndex
+from glosa.domain.navigate import NavigateConfig, NavigateStrategy
+from glosa.infra.docling.projection import DoclingProjector
 
 if TYPE_CHECKING:
-    from glosa.llm.port import ChatModel
-    from glosa.studio.ports import TreeReader
-    from glosa.types import Trace
+    from glosa.domain.values import Trace
+    from glosa.ports.chat import ChatModel
+    from glosa.ports.document import DocumentProjector
 
 DEFAULT_CACHE_SIZE = 8
 
@@ -50,19 +60,18 @@ class ParseErrorFactory(Protocol):
 
 
 class GlosaReasoningRunner:
-    """Answers a question against a stored `DoclingDocument`.
+    """Answers a question against a stored document.
 
     Args:
         model: The chat backend. Any `ChatModel` — Ollama, OpenAI-compatible,
             or a test double.
+        projector: How to turn a stored payload into a projection. Defaults to
+            the bundled Docling projector; pass one built with the host's own
+            tree reader so the collapse rules have a single implementation.
         config: Loop tuning. Defaults suit a 30-page report on a local 8B model.
         cache_size: How many parsed documents to keep indexed. Studio asks
             several questions of the same document, and re-parsing it each time
             is pure waste.
-        tree_reader: The host's own `DocumentTreeReader`. Pass Studio's
-            `DoclingTreeReader` so the deployment has a single implementation
-            of the InlineGroup / picture collapse rules; glosa falls back to a
-            bundled mirror of it when omitted.
         include_furniture: Put running heads and footers in front of the model.
             Off by default — they are repeated on every page and answer nothing.
         result_factory / iteration_factory: Host types to build the reply with.
@@ -75,9 +84,9 @@ class GlosaReasoningRunner:
         self,
         model: ChatModel,
         *,
+        projector: DocumentProjector | None = None,
         config: NavigateConfig | None = None,
         cache_size: int = DEFAULT_CACHE_SIZE,
-        tree_reader: TreeReader | None = None,
         include_furniture: bool = False,
         result_factory: ResultFactory = LegacyResult,
         iteration_factory: IterationFactory = LegacyIteration,
@@ -85,10 +94,10 @@ class GlosaReasoningRunner:
         annotate_status: bool = True,
     ) -> None:
         self._model = model
+        self._projector: DocumentProjector = projector or DoclingProjector()
         self._config = config or NavigateConfig()
         self._cache: OrderedDict[str, DocIndex] = OrderedDict()
         self._cache_size = max(1, cache_size)
-        self._tree_reader = tree_reader
         self._include_furniture = include_furniture
         self._result_factory = result_factory
         self._iteration_factory = iteration_factory
@@ -157,9 +166,8 @@ class GlosaReasoningRunner:
             self._cache.move_to_end(digest)
             return cached
 
-        index = DocIndex.from_json(
-            document_json,
-            tree_reader=self._tree_reader,
+        index = DocIndex(
+            self._projector.project(document_json),
             include_furniture=self._include_furniture,
         )
         self._cache[digest] = index

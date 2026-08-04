@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from glosa.document.index import DocIndex
-from glosa.errors import DocumentParseError
-from glosa.studio.projection import node_id_for, page_node_id
-from glosa.types import UnitKind
-from tests.conftest import index_of
+from glosa.domain.errors import DocumentParseError
+from glosa.domain.index import DocIndex
+from glosa.domain.values import Element, UnitKind
+from glosa.infra.docling.projection import node_id_for, page_node_id
+from glosa.ports.document import DocumentProjection
+from tests.conftest import FakeProjection, index_of
 
 
 def _titles(document_json: str) -> list[str]:
@@ -118,14 +119,22 @@ def test_unknown_ref_yields_an_empty_excerpt(flat_json: str) -> None:
     assert index_of(flat_json).excerpt("#/texts/999").text == ""
 
 
-def test_from_json_records_a_content_hash(flat_json: str) -> None:
-    assert len(index_of(flat_json).doc_hash) == 64
+def test_the_index_runs_on_any_projection_not_just_doclings() -> None:
+    """The inversion, demonstrated: a hand-written projection, no Docling."""
+    a = Element(self_ref="a", node_id="n::a", text="Chapter", order=0, is_section=True)
+    b = Element(self_ref="b", node_id="n::b", text="Body text.", order=1, pages=(7,), page_no=7)
+    index = DocIndex(FakeProjection((a, b)))
+
+    assert isinstance(index.projection, DocumentProjection)
+    assert [u.ref for u in index.units] == ["a"]
+    assert index.excerpt("a").text == "Chapter\n\nBody text."
+    assert index.excerpt("a").node_ids == ("n::a", "n::b")
 
 
 @pytest.mark.parametrize("payload", ["not json at all", "[]", '"a string"'])
 def test_from_json_rejects_anything_that_is_not_a_document(payload: str) -> None:
     with pytest.raises(DocumentParseError):
-        DocIndex.from_json(payload)
+        index_of(payload)
 
 
 def test_an_empty_document_has_no_units() -> None:

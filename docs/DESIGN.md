@@ -207,73 +207,56 @@ Read from `docling_agent/agent/rag.py` @ `main` and Studio's adapter.
 
 ## 5. Architecture
 
+Hexagonal, same discipline as Studio. Four layers, dependencies pointing inward
+only:
+
 ```
 glosa/
-  types.py              Span, Excerpt, Step, Trace + the legacy 6-field projection
-  studio/               ← Studio's document object; ✅ shipped
-    tree.py             mirror of infra/docling_tree.py — collapses, dfs_order, labels
-    ports.py            TreeReader (mirrors Studio's DocumentTreeReader)
-    projection.py       Element / Scope / StudioProjection — node ids, order, scoping
-    render.py           element → text: inline concat, table HTML, figure caption
-  document/
-    index.py            DocIndex — units, excerpts, caches over a projection
+  domain/               pure logic — no I/O, no wire format, no host shape
+    values.py           Element, Scope, Span, Excerpt, Step, Trace, RunStatus
+    index.py            DocIndex — units, excerpts, budgets over a projection
     outline.py          budget-aware outline rendering
-  retrieve/                                                          ← P2
-    lexical.py          BM25 over element text (vendored, no dep)
-    vector.py           VectorRetriever port (Studio: EmbeddingService + OpenSearch)
-    structure.py        caption / footnote / neighbour expansion
-    fuse.py             reciprocal-rank fusion + LLM re-rank
-  llm/                  ✅ shipped
-    port.py             ChatModel: complete / structured(schema) / stream
-    base.py             transport, retries, repair round-trip
-    ollama.py openai.py
-    schema.py           strict-schema conversion + JSON extraction
-  strategy/
-    navigate.py         ✅ outline navigation, notes memory, budgets, abstention
-    hybrid.py           retrieve-then-read                            ← P2
-    router.py           picks a strategy from doc size / structure     ← P2
-  verify/                                                            ← P3
-    ground.py           sentence → evidence alignment, groundedness score
-  runtime/
+    navigate.py         ✅ the reading loop: notes memory, abstention, budgets
     budget.py           ✅ step / call / wall-clock budget, deadline
-    events.py           typed event stream                            ← P3
-    journal.py          prompt/response journal → deterministic replay ← P3
-  adapters/             ✅ shipped
-    studio.py           GlosaReasoningRunner (implements Studio's port)
-    legacy.py           six-field projection of a rich Trace
-  server/app.py         standalone SSE sidecar                        ← P3
-  cli.py                ✅ glosa ask | map        (+ replay | eval    ← P5)
+    errors.py
+  ports/                protocols only
+    document.py         DocumentProjection, DocumentProjector, TreeReader
+    chat.py             ChatModel: complete / structured(schema) / stream
+  infra/                driven adapters
+    docling/
+      tree.py           mirror of Studio's infra/docling_tree.py
+      render.py         element → text: inline concat, table HTML, figure caption
+      projection.py     ✅ DoclingProjection / DoclingProjector
+    llm/                ✅ base transport + retries, ollama, openai, schema
+  adapters/             driving adapters
+    studio.py           ✅ GlosaReasoningRunner (implements Studio's port)
+    legacy.py           ✅ six-field wire projection + its pydantic models
+  cli.py                ✅ composition root: glosa ask | map
+  retrieve/             ← P2  lexical (BM25), vector, structure, fuse
+  verify/               ← P3  sentence → evidence alignment, groundedness
+  runtime/              ← P3  typed event stream, replay journal
+  server/               ← P3  standalone SSE sidecar
 ```
 
+Three rules, all executable — `tests/test_architecture.py` walks the import
+graph and fails on a violation:
 
-Hexagonal, same discipline as Studio. Two rules hold the design together:
+1. **`domain` imports only `ports`.** It never learns that a document arrives
+   as JSON, that nodes are called `elem::…`, or that a model is reached over
+   HTTP. `json.loads` appears in exactly one package (`infra/docling`), and
+   `httpx` in exactly one (`infra/llm`).
+2. **`ports` are protocols.** They may name domain values; they never name an
+   implementation. Pydantic is allowed inward as a *description* language — it
+   is the schema vocabulary of `ChatModel.structured` — but no I/O library is.
+3. **`adapters` is the only layer that may see `infra`,** because it is the
+   composition point: `GlosaReasoningRunner` picks a default `DoclingProjector`
+   and hands the domain nothing but ports.
 
-* `document/`, `strategy/` and `adapters/` never import an LLM SDK or an HTTP
-  client — everything crosses `llm/port.py`;
-* nothing outside `studio/` interprets Docling's raw shape. Structure comes
-  from `StudioProjection` or it does not come at all.
-
-### The default loop (`strategy/hybrid.py`)
-
-```
-0. index      DocIndex from document_json (cached by content hash)
-1. shortlist  BM25 over node texts  →  top-N candidate refs
-              ∪ LLM ranking over a budget-fitted outline slice
-              fused by RRF, expanded structurally (parent, captions, table refs)
-2. read       top-k candidates read CONCURRENTLY (k≈3), one structured call
-              each → Note(claim, evidence_span, sufficient: bool)
-3. decide     answered / need-more / not-in-document
-              need-more → new frontier from the notes' open questions,
-              re-visiting allowed at a cost, budget decremented
-4. compose    answer from Notes only (never from raw accumulated context)
-5. verify     each sentence aligned to ≥1 evidence span; unsupported ones
-              flagged or dropped; groundedness score attached
-```
-
-Working memory is a list of typed `Note`s, not a growing chat transcript. That
-is what keeps the context flat across hops and makes step 4 reproducible.
-
----
+The inversion is real, not cosmetic: `DocIndex` runs against any
+`DocumentProjection`, and one of the tests drives it with a hand-written
+projection containing no Docling at all. Studio can therefore replace the
+projector — with one built on its own `DoclingTreeReader`, on Neo4j, or on
+whatever comes after — without the reading logic noticing.
 
 ## 6. What we do better — the concrete list
 

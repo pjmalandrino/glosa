@@ -15,9 +15,9 @@ from typing import Any
 import httpx
 from pydantic import BaseModel
 
-from glosa.errors import BackendError, ReasoningParseError
-from glosa.llm.port import ChatModel, Message
-from glosa.llm.schema import parse_payload, repair_prompt
+from glosa.domain.errors import BackendError, ReasoningParseError
+from glosa.infra.llm.schema import parse_payload, repair_prompt
+from glosa.ports.chat import ChatModel, Message
 
 logger = logging.getLogger(__name__)
 

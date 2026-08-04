@@ -64,6 +64,13 @@ Inside Docling Studio, `runner.run(...)` returns Studio's own
 `ReasoningResult` / `ReasoningIteration` — see
 [`docs/INTEGRATION.md`](docs/INTEGRATION.md) for the wire-up.
 
+## Layout
+
+Hexagonal: `domain/` (pure logic) depends only on `ports/` (protocols);
+`infra/` and `adapters/` implement them. `tests/test_architecture.py` walks the
+import graph and fails if a dependency points outward — `json.loads` lives in
+`infra/docling` only, `httpx` in `infra/llm` only.
+
 ## Docs
 
 - [`docs/DESIGN.md`](docs/DESIGN.md) — design, phased plan, what we do differently

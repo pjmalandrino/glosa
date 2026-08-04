@@ -10,7 +10,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 
-from glosa.errors import BudgetExhausted
+from glosa.domain.errors import BudgetExhausted
 
 
 @dataclass(slots=True)

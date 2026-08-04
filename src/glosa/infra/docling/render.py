@@ -12,7 +12,7 @@ from __future__ import annotations
 from html import escape
 from typing import Any
 
-from glosa.studio.tree import child_ref, item_label
+from glosa.infra.docling.tree import child_ref, item_label
 
 MAX_TABLE_CELLS = 4_000
 

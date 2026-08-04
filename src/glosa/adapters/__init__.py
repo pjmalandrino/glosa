@@ -1,6 +1,6 @@
-"""Host integrations."""
+"""Driving adapters — how a host calls glosa."""
 
-from glosa.adapters.legacy import to_legacy
+from glosa.adapters.legacy import LegacyIteration, LegacyResult, to_legacy
 from glosa.adapters.studio import GlosaReasoningRunner
 
-__all__ = ["GlosaReasoningRunner", "to_legacy"]
+__all__ = ["GlosaReasoningRunner", "LegacyIteration", "LegacyResult", "to_legacy"]

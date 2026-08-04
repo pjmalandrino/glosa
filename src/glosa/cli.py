@@ -17,13 +17,14 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from glosa.document.index import DocIndex
-from glosa.document.outline import render_outline
-from glosa.llm.ollama import DEFAULT_HOST, OllamaChatModel
-from glosa.llm.openai import DEFAULT_BASE_URL, OpenAIChatModel
-from glosa.llm.port import ChatModel
-from glosa.strategy.navigate import NavigateConfig, NavigateStrategy
-from glosa.types import Trace
+from glosa.domain.index import DocIndex
+from glosa.domain.navigate import NavigateConfig, NavigateStrategy
+from glosa.domain.outline import render_outline
+from glosa.domain.values import Trace
+from glosa.infra.docling.projection import DoclingProjector
+from glosa.infra.llm.ollama import DEFAULT_HOST, OllamaChatModel
+from glosa.infra.llm.openai import DEFAULT_BASE_URL, OpenAIChatModel
+from glosa.ports.chat import ChatModel
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -48,6 +49,12 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _index(path: Path) -> DocIndex:
+    """Composition: pick a projector, hand the domain a projection."""
+    projection = DoclingProjector().project(path.read_text(encoding="utf-8"))
+    return DocIndex(projection)
+
+
 def _model_for(args: argparse.Namespace) -> ChatModel:
     if args.provider == "ollama":
         return OllamaChatModel(
@@ -64,7 +71,7 @@ def _model_for(args: argparse.Namespace) -> ChatModel:
 
 
 async def _ask(args: argparse.Namespace) -> int:
-    index = DocIndex.from_json(args.document.read_text(encoding="utf-8"))
+    index = _index(args.document)
     model = _model_for(args)
     strategy = NavigateStrategy(
         model, NavigateConfig(max_steps=args.max_steps, deadline_s=args.timeout)
@@ -94,7 +101,7 @@ async def _ask(args: argparse.Namespace) -> int:
 
 
 def _show_map(args: argparse.Namespace) -> int:
-    index = DocIndex.from_json(args.document.read_text(encoding="utf-8"))
+    index = _index(args.document)
     print(f"{index.title} — {len(index.units)} unit(s) of kind '{index.kind}'")
     print(render_outline(index.units, char_budget=args.budget))
     return 0

@@ -16,8 +16,10 @@ from docling_core.types.doc.base import BoundingBox, CoordOrigin, Size
 from docling_core.types.doc.document import ProvenanceItem
 from pydantic import BaseModel
 
-from glosa.document.index import DocIndex
-from glosa.llm.port import ChatModel, Message
+from glosa.domain.index import DocIndex
+from glosa.domain.values import Element, Scope
+from glosa.infra.docling.projection import DoclingProjector
+from glosa.ports.chat import ChatModel, Message
 
 PAGE_HEIGHT = 792.0
 PAGE_WIDTH = 612.0
@@ -37,8 +39,10 @@ def pages(doc: DoclingDocument, count: int) -> None:
         doc.add_page(page_no=page_no, size=Size(width=PAGE_WIDTH, height=PAGE_HEIGHT))
 
 
-def index_of(document_json: str, **kwargs: Any) -> DocIndex:
-    return DocIndex.from_json(document_json, **kwargs)
+def index_of(document_json: str, *, tree_reader: Any = None, **kwargs: Any) -> DocIndex:
+    """Compose a projector and an index — what a host's wire-up does."""
+    projection = DoclingProjector(tree_reader=tree_reader).project(document_json)
+    return DocIndex(projection, **kwargs)
 
 
 # --- documents ---------------------------------------------------------------
@@ -251,6 +255,75 @@ def table_json() -> str:
 @pytest.fixture
 def furniture_json() -> str:
     return build_furniture().model_dump_json()
+
+
+class FakeProjection:
+    """A `DocumentProjection` built by hand — no Docling, no JSON.
+
+    Its existence is the point: the domain works against the port, so anything
+    that satisfies the protocol can drive it.
+    """
+
+    def __init__(self, elements: tuple[Element, ...], *, title: str = "fake") -> None:
+        self._elements = elements
+        self._title = title
+
+    @property
+    def title(self) -> str:
+        return self._title
+
+    @property
+    def elements(self) -> tuple[Element, ...]:
+        return self._elements
+
+    @property
+    def node_ids(self) -> frozenset[str]:
+        return frozenset(e.node_id for e in self._elements)
+
+    @property
+    def has_sections(self) -> bool:
+        return any(e.is_section for e in self._elements)
+
+    @property
+    def page_numbers(self) -> tuple[int, ...]:
+        return tuple(sorted({p for e in self._elements for p in e.pages}))
+
+    def readable(self, *, include_furniture: bool = False) -> tuple[Element, ...]:
+        if include_furniture:
+            return self._elements
+        return tuple(e for e in self._elements if not e.is_furniture)
+
+    def scopes(self, *, include_furniture: bool = False) -> tuple[Scope, ...]:
+        scopes: list[Scope] = []
+        anchor: Element | None = None
+        members: list[Element] = []
+        for element in self.readable(include_furniture=include_furniture):
+            if element.is_section:
+                if anchor is not None:
+                    scopes.append(Scope(anchor, tuple(members)))
+                elif members:
+                    scopes.append(Scope(members[0], tuple(members[1:])))
+                anchor, members = element, []
+                continue
+            members.append(element)
+        if anchor is not None:
+            scopes.append(Scope(anchor, tuple(members)))
+        elif members:
+            scopes.append(Scope(members[0], tuple(members[1:])))
+        return tuple(scopes)
+
+    def page_elements(
+        self, page_no: int, *, include_furniture: bool = False
+    ) -> tuple[Element, ...]:
+        return tuple(
+            e for e in self.readable(include_furniture=include_furniture) if page_no in e.pages
+        )
+
+    def page_ref(self, page_no: int) -> str:
+        return f"page/{page_no}"
+
+    def page_node_id(self, page_no: int) -> str:
+        return f"p::{page_no}"
 
 
 # --- scripted model ----------------------------------------------------------

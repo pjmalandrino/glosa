@@ -28,17 +28,17 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
-from glosa.document.outline import render_outline
-from glosa.errors import BudgetExhausted
-from glosa.llm.port import Message, system, user
-from glosa.runtime.budget import Budget
-from glosa.types import Excerpt, RunStatus, Span, Step, Trace, UnitKind
+from glosa.domain.budget import Budget
+from glosa.domain.errors import BudgetExhausted
+from glosa.domain.outline import render_outline
+from glosa.domain.values import Excerpt, RunStatus, Span, Step, Trace, UnitKind
+from glosa.ports.chat import Message, system, user
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from glosa.document.index import DocIndex, Unit
-    from glosa.llm.port import ChatModel
+    from glosa.domain.index import DocIndex, Unit
+    from glosa.ports.chat import ChatModel
 
 logger = logging.getLogger(__name__)
 

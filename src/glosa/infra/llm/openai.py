@@ -12,10 +12,10 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from glosa.errors import BackendError
-from glosa.llm.base import HTTPChatModel
-from glosa.llm.port import Message
-from glosa.llm.schema import to_strict_schema
+from glosa.domain.errors import BackendError
+from glosa.infra.llm.base import HTTPChatModel
+from glosa.infra.llm.schema import to_strict_schema
+from glosa.ports.chat import Message
 
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
 
