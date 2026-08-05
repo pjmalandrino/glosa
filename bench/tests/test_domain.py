@@ -10,17 +10,28 @@ from __future__ import annotations
 
 import pytest
 
-from gbench.domain.item import ABSTAIN_LETTER, Item, ItemKind, rotations_of, unrotate
+from gbench.domain.item import (
+    ABSTAIN_LETTER,
+    LETTERS,
+    Item,
+    ItemKind,
+    assigned_rotation,
+    flip_subsample,
+    rotations_of,
+    schedule,
+    unrotate,
+)
 from gbench.domain.metrics import (
     abstention,
     accuracy,
+    flip_observed,
     flip_rate,
     hit_at_k,
     paired_delta,
     percentile,
     read_precision,
 )
-from gbench.domain.report import DASH, cell
+from gbench.domain.report import DASH, breakdown, cell
 from gbench.domain.scoring import Outcome, Policy, extract_letter, score
 
 
@@ -77,6 +88,53 @@ def test_rotations_of_refuses_a_partial_cycle_it_cannot_produce():
     assert len(rotations_of(item(), 4)) == 4
     with pytest.raises(ValueError):
         rotations_of(item(), 5)
+
+
+# --- the sampling plan ---------------------------------------------------------
+
+
+def suite(count: int = 200) -> list[Item]:
+    kinds = list(ItemKind)
+    return [
+        item(
+            id=f"p{index // 5:02d}-q{index % 5}",
+            kind=kinds[index % 5],
+            answer="E" if kinds[index % 5] is ItemKind.NOT_STATED else "B",
+        )
+        for index in range(count)
+    ]
+
+
+def test_assigned_rotations_spread_over_a_suite():
+    # This is what buys the right to not sweep everything: across 200 items the
+    # answer sits in all four positions about equally, so the aggregate has no
+    # position bias to correct for.
+    counts = [0] * len(LETTERS)
+    for entry in suite():
+        counts[assigned_rotation(entry.id)] += 1
+    assert min(counts) > 0.6 * max(counts), counts
+
+
+def test_assigned_rotation_is_stable():
+    assert assigned_rotation("p01-q3") == assigned_rotation("p01-q3")
+
+
+def test_the_flip_sample_is_balanced_over_kinds_and_stable():
+    sample = flip_subsample(suite(), 40)
+    assert len(sample) == 40
+    assert sample == flip_subsample(suite(), 40)
+    by_kind = {}
+    lookup = {entry.id: entry.kind for entry in suite()}
+    for item_id in sample:
+        by_kind[lookup[item_id]] = by_kind.get(lookup[item_id], 0) + 1
+    assert set(by_kind) == set(ItemKind)
+    assert max(by_kind.values()) - min(by_kind.values()) <= 1
+
+
+def test_the_default_plan_costs_320_executions_not_800():
+    entries = suite()
+    assert len(schedule(entries, flip_sample=40)) == 200 + 40 * 3
+    assert len(schedule(entries, sweep=True)) == 800
 
 
 # --- the letter parser ---------------------------------------------------------
@@ -170,6 +228,14 @@ def test_an_item_is_one_observation_not_four():
     assert accuracy(scored) == pytest.approx(0.375)
 
 
+def test_flip_rate_is_none_when_nothing_was_swept():
+    # Every item at one rotation would otherwise report as "did not flip", and
+    # a benchmark would publish 0 % instability having looked at nothing.
+    single = [score(item(id="a").render(0), engine="e", text="B", abstained=False)]
+    assert flip_rate(single) is None
+    assert flip_observed(single) == 0
+
+
 def test_flip_rate_counts_items_that_change_their_pick():
     stable = score(item(id="a").render(0), engine="e", text="B", abstained=False)
     same = score(item(id="a").render(1), engine="e", text="C", abstained=False)
@@ -178,6 +244,18 @@ def test_flip_rate_counts_items_that_change_their_pick():
     moved = score(item(id="b").render(1), engine="e", text="A", abstained=False)
     other = score(item(id="b").render(0), engine="e", text="A", abstained=False)
     assert flip_rate([moved, other]) == 1.0
+    assert flip_observed([moved, other]) == 1
+
+
+def test_flip_rate_ignores_the_items_that_were_not_swept():
+    swept = [
+        score(item(id="a").render(rotation), engine="e", text="B", abstained=False)
+        for rotation in (0, 1)
+    ]
+    unswept = [score(item(id="b").render(0), engine="e", text="B", abstained=False)]
+    # 'a' flipped (same letter at two rotations = two different options); 'b'
+    # was never swept and must not dilute the rate toward zero.
+    assert flip_rate(swept + unswept) == 1.0
 
 
 def test_abstention_is_reported_as_a_pair_because_either_alone_is_gameable():
@@ -228,3 +306,9 @@ def test_paired_delta_finds_a_real_difference():
 def test_a_metric_an_engine_cannot_report_is_a_dash_not_a_zero():
     assert cell(None) == DASH
     assert cell(0.0, pct=True) == "0.0 %"
+
+
+def test_a_breakdown_keeps_the_dash_for_a_column_an_engine_never_saw():
+    rendered = breakdown("By kind", {"glosa": {"table": 0.5, "lookup": None}})
+    assert "| glosa | lookup | table |" not in rendered  # engines are rows
+    assert "50.0 %" in rendered and DASH in rendered

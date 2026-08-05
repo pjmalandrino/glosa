@@ -88,19 +88,24 @@ import graph and fails if a dependency points outward — `json.loads` lives in
 ## Benchmark
 
 [`bench/`](bench) is a separate project with its own lockfile — measuring a
-competitor must not put `mellea` or `torch` in glosa's dependency graph. It
-asks the same multiple-choice question over the same document to all three
-engines, plus a closed-book floor and an oracle-context ceiling:
+competitor must not put `mellea` or `torch` in glosa's dependency graph.
+
+**40 arXiv papers, 5 questions each.** The same multiple-choice question goes to
+all three engines, against three controls that stop the number lying: a
+closed-book floor (the model has probably read the paper), an abstract-only
+floor (papers come with a summary), and an oracle-context ceiling.
 
 ```bash
-uv run --directory bench gbench lint          # keep the corpus honest — no model
-uv run --directory bench gbench run --engines glosa,closed-book,oracle-context
+uv run --directory bench gbench lint    # keep the corpus honest — no model, no GPU
+uv run --directory bench gbench run     # glosa + the three controls
 uv run --directory bench gbench score
 ```
 
 Running and scoring are different commands: `run` appends raw rows to a
-journal, `score` turns a journal into the table. So every number here can be
-recomputed by someone with the repository and no GPU.
+journal, `score` turns a journal into the table. And the corpus is committed as
+a manifest — arXiv id, version, SHA-256, licence — plus the projected text of
+each paper. So every number here can be re-derived, and every quote re-checked,
+by someone with the repository, no GPU and nothing downloaded.
 
 ## Status
 

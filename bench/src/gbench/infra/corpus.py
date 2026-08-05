@@ -1,25 +1,35 @@
 """Reading the corpus off disk.
 
-The one place that knows a document is a `DoclingDocument` on disk and an item
-is YAML. It resolves refs through **glosa's own projection**, which is not a
-convenience: `gold_refs` must mean the same nodes the engines are scored
-against, and the projection is the definition of what nodes exist
-(`DESIGN.md` §2). Authoring against docling-core's raw item tree instead would
-produce refs that no engine can hit.
+The one place that knows a document is a paper on arXiv, a `DoclingDocument` on
+disk, and a YAML file of questions.
 
-Layout:
+**What is committed and what is not.** Forty PDFs and their conversions are
+hundreds of megabytes; a git repository is the wrong place for them. So:
 
-    corpus/
-      suite.yaml                      documents, defaults, profiles
-      docs/<slug>/docling.json        the committed conversion
-      docs/<slug>/doc.md              its export_to_markdown(), committed
-      docs/<slug>/source.pdf          kept, unused by the headline runs
-      items/<slug>.yaml               the questions
+* `manifest.yaml` — **committed.** arXiv id, version, SHA-256, licence,
+  category. The corpus *is* this file.
+* `items/*.yaml` — **committed.** The questions, a few kilobytes.
+* `docs/<slug>/sections.json` — **committed.** Ref to text of the projected
+  paper, around 100 KB. It is what `gbench lint` checks quotes against, so the
+  corpus stays auditable with nothing downloaded.
+* `docs/<slug>/source.pdf` — not committed. `gbench fetch`, verified against
+  the manifest's SHA-256.
+* `docs/<slug>/docling.json`, `doc.md` — not committed. `gbench convert`.
+
+The consequence worth stating: `lint` and `score` run in CI with nothing
+downloaded, and only `run` needs the full conversion. A third party can check
+every quote, every distractor and every published number without a GPU and
+without re-downloading forty papers — and can still reproduce the conversions
+exactly, because the manifest pins the bytes.
+
+`sections.json` is generated *from* `docling.json` and can therefore drift from
+it. `tests/test_harness.py` fails if it does, wherever both are present.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
@@ -34,27 +44,38 @@ from gbench.ports.engine import BenchDocument
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from glosa.ports.document import DocumentProjection
+ABSTRACT_TITLES = ("abstract", "résumé", "resume", "summary")
+"""Headings that open a paper's own summary, folded."""
+
+
+class CorpusIncomplete(RuntimeError):
+    """A document's conversion is missing. Says what to run."""
 
 
 @dataclass(frozen=True, slots=True)
-class _Doc:
+class Paper:
+    """One manifest entry — the corpus's unit of provenance."""
+
     slug: str
-    root: Path
+    title: str = ""
+    arxiv_id: str = ""
+    version: str = "v1"
+    sha256: str = ""
+    license: str = ""
+    primary_category: str = ""
+    generated: bool = False
+    """True for the fixture document, which has no upstream to fetch."""
 
     @property
-    def docling_json(self) -> str:
-        return (self.root / "docling.json").read_text(encoding="utf-8")
+    def pdf_url(self) -> str:
+        return f"https://arxiv.org/pdf/{self.arxiv_id}{self.version}"
 
-    @property
-    def markdown(self) -> str:
-        path = self.root / "doc.md"
-        return path.read_text(encoding="utf-8") if path.exists() else ""
 
-    @property
-    def pdf(self) -> str | None:
-        path = self.root / "source.pdf"
-        return str(path) if path.exists() else None
+@dataclass(frozen=True, slots=True)
+class Section:
+    ref: str
+    text: str
+    label: str = ""
 
 
 class FileCorpus:
@@ -62,39 +83,148 @@ class FileCorpus:
 
     def __init__(self, root: Path) -> None:
         self._root = root
-        self._suite: dict[str, Any] = yaml.safe_load(
-            (root / "suite.yaml").read_text(encoding="utf-8")
-        )
-        self._docs = {
-            slug: _Doc(slug, root / "docs" / slug) for slug in self._suite.get("documents", [])
+        self._suite: dict[str, Any] = _load_yaml(root / "suite.yaml")
+        self._papers = {
+            entry["slug"]: Paper(
+                slug=str(entry["slug"]),
+                title=str(entry.get("title", "")),
+                arxiv_id=str(entry.get("arxiv_id", "")),
+                version=str(entry.get("version", "v1")),
+                sha256=str(entry.get("sha256", "")),
+                license=str(entry.get("license", "")),
+                primary_category=str(entry.get("primary_category", "")),
+                generated=bool(entry.get("generated", False)),
+            )
+            for entry in _load_yaml(root / "manifest.yaml").get("documents", [])
         }
-        self._projections: dict[str, DocumentProjection] = {}
+        self._sections: dict[str, tuple[Section, ...]] = {}
+
+    # --- documents ------------------------------------------------------------
 
     @property
     def slugs(self) -> tuple[str, ...]:
-        return tuple(self._docs)
+        return tuple(self._papers)
 
     @property
     def suite(self) -> dict[str, Any]:
         return self._suite
 
+    @property
+    def papers(self) -> dict[str, Paper]:
+        return dict(self._papers)
+
+    def licenses(self) -> dict[str, str]:
+        return {slug: paper.license for slug, paper in self._papers.items()}
+
+    def dir_of(self, slug: str) -> Path:
+        return self._root / "docs" / slug
+
     def document(self, slug: str) -> BenchDocument:
-        doc = self._docs[slug]
-        raw = doc.docling_json
+        """The full conversion — what the engines read. Needs `gbench convert`."""
+        path = self.dir_of(slug) / "docling.json"
+        if not path.exists():
+            raise CorpusIncomplete(
+                f"{slug}: no docling.json. Run `gbench fetch` then `gbench convert`."
+            )
+        raw = path.read_text(encoding="utf-8")
+        markdown = self.dir_of(slug) / "doc.md"
+        pdf = self.dir_of(slug) / "source.pdf"
         return BenchDocument(
             slug=slug,
             docling_json=raw,
-            markdown=doc.markdown,
-            pdf_path=doc.pdf,
+            markdown=markdown.read_text(encoding="utf-8") if markdown.exists() else "",
+            pdf_path=str(pdf) if pdf.exists() else None,
             doc_hash=hashlib.sha256(raw.encode()).hexdigest()[:16],
         )
+
+    def converted(self, slug: str) -> bool:
+        return (self.dir_of(slug) / "docling.json").exists()
+
+    # --- text -----------------------------------------------------------------
+
+    def sections(self, slug: str) -> tuple[Section, ...]:
+        """The paper's projected elements — from `sections.json` when it is
+        committed, from the conversion otherwise."""
+        if slug in self._sections:
+            return self._sections[slug]
+
+        path = self.dir_of(slug) / "sections.json"
+        if path.exists():
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            found = tuple(
+                Section(str(row["ref"]), str(row.get("text", "")), str(row.get("label", "")))
+                for row in payload.get("elements", [])
+            )
+        elif self.converted(slug):
+            found = self.project(slug)
+        else:
+            found = ()
+        self._sections[slug] = found
+        return found
+
+    def project(self, slug: str) -> tuple[Section, ...]:
+        """Straight from `docling.json`, through glosa's own projector.
+
+        Refs mean what the engines will be scored against, or `hit@k` would be
+        measuring the corpus rather than the engines.
+        """
+        projection = DoclingProjector().project(
+            (self.dir_of(slug) / "docling.json").read_text(encoding="utf-8")
+        )
+        return tuple(
+            Section(element.self_ref, element.text, element.graph_label)
+            for element in projection.elements
+        )
+
+    def text_of(self, slug: str, ref: str) -> str:
+        for section in self.sections(slug):
+            if section.ref == ref:
+                return section.text
+        return ""
+
+    def doc_text(self, slug: str) -> str:
+        return "\n".join(section.text for section in self.sections(slug))
+
+    def ref_chars(self, slug: str) -> dict[str, int]:
+        return {section.ref: len(section.text) for section in self.sections(slug)}
+
+    def abstract_refs(self, slug: str) -> tuple[str, ...]:
+        """Title and abstract — everything before the paper's first real section.
+
+        Two ways in, because conversions disagree: an explicit "Abstract"
+        heading when there is one, and otherwise everything up to the first
+        heading, which is where the front matter lives.
+        """
+        sections = self.sections(slug)
+        folded = [(s, " ".join(s.text.casefold().split())) for s in sections]
+        for index, (section, text) in enumerate(folded):
+            if text.rstrip(" :.") in ABSTRACT_TITLES:
+                out = [section.ref]
+                for following, _ in folded[index + 1 :]:
+                    if _is_heading(following):
+                        break
+                    out.append(following.ref)
+                return tuple(out)
+
+        out = []
+        for index, (section, _) in enumerate(folded):
+            if _is_heading(section) and index > 0:
+                break
+            out.append(section.ref)
+        return tuple(out)
+
+    def abstract_text(self, slug: str) -> str:
+        inside = set(self.abstract_refs(slug))
+        return "\n".join(s.text for s in self.sections(slug) if s.ref in inside)
+
+    # --- items ----------------------------------------------------------------
 
     @cached_property
     def _items(self) -> tuple[Item, ...]:
         items: list[Item] = []
         for path in sorted((self._root / "items").glob("*.yaml")):
-            for raw in yaml.safe_load(path.read_text(encoding="utf-8")) or []:
-                items.append(_item_from(raw))
+            for raw in _load_yaml_list(path):
+                items.append(self._item_from(raw))
         return tuple(items)
 
     def items(self, slug: str | None = None) -> Sequence[Item]:
@@ -102,38 +232,64 @@ class FileCorpus:
             return self._items
         return [item for item in self._items if item.doc == slug]
 
-    # --- text resolution, through the projection ------------------------------
+    def _item_from(self, raw: dict[str, Any]) -> Item:
+        doc = str(raw["doc"])
+        paper = self._papers.get(doc)
+        return Item(
+            id=str(raw["id"]),
+            doc=doc,
+            kind=ItemKind(raw.get("kind", "lookup")),
+            question=str(raw["question"]),
+            options={str(k): str(v) for k, v in raw["options"].items()},
+            answer=str(raw["answer"]),
+            # The field is the paper's, not the question's — so it is taken from
+            # the manifest and cannot drift item by item.
+            domain=str(raw.get("domain") or (paper.primary_category if paper else "")),
+            gold_refs=tuple(raw.get("gold_refs", ()) or ()),
+            gold_quote=str(raw.get("gold_quote", "") or ""),
+            distractor_refs={str(k): str(v) for k, v in (raw.get("distractor_refs") or {}).items()},
+            removed_from=str(raw.get("removed_from", "") or ""),
+            authored_by=str(raw.get("authored_by", "") or ""),
+            authored_from=str(raw.get("authored_from", "document")),
+        )
 
-    def _projection(self, slug: str) -> DocumentProjection:
-        if slug not in self._projections:
-            self._projections[slug] = DoclingProjector().project(self._docs[slug].docling_json)
-        return self._projections[slug]
 
-    def text_of(self, slug: str, ref: str) -> str:
-        for element in self._projection(slug).elements:
-            if element.self_ref == ref:
-                return element.text
-        return ""
+HEADING_LABEL = "SectionHeader"
+"""What glosa's projection calls a heading.
 
-    def doc_text(self, slug: str) -> str:
-        return "\n".join(element.text for element in self._projection(slug).elements)
-
-    def ref_chars(self, slug: str) -> dict[str, int]:
-        return {element.self_ref: len(element.text) for element in self._projection(slug).elements}
+Both `title` and `section_header` collapse to it — Studio's `LABEL_MAP` does
+that, and glosa follows Studio (`DESIGN.md` §2). Which is why `abstract_refs`
+stops at the first heading *after* index 0 rather than at the first heading:
+the paper's own title is one."""
 
 
-def _item_from(raw: dict[str, Any]) -> Item:
-    return Item(
-        id=str(raw["id"]),
-        doc=str(raw["doc"]),
-        kind=ItemKind(raw.get("kind", "lookup")),
-        question=str(raw["question"]),
-        options={str(k): str(v) for k, v in raw["options"].items()},
-        answer=str(raw["answer"]),
-        gold_refs=tuple(raw.get("gold_refs", ()) or ()),
-        gold_quote=str(raw.get("gold_quote", "") or ""),
-        distractor_refs={str(k): str(v) for k, v in (raw.get("distractor_refs") or {}).items()},
-        removed_from=str(raw.get("removed_from", "") or ""),
-        authored_by=str(raw.get("authored_by", "") or ""),
-        authored_from=str(raw.get("authored_from", "document")),
+def _is_heading(section: Section) -> bool:
+    return section.label == HEADING_LABEL
+
+
+def write_sections(path: Path, slug: str, sections: Sequence[Section]) -> None:
+    """Emit the committed, auditable half of a converted paper."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "slug": slug,
+                "elements": [{"ref": s.ref, "label": s.label, "text": s.text} for s in sections],
+            },
+            ensure_ascii=False,
+            indent=1,
+        ),
+        encoding="utf-8",
     )
+
+
+def _load_yaml(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _load_yaml_list(path: Path) -> list[dict[str, Any]]:
+    loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return loaded if isinstance(loaded, list) else []

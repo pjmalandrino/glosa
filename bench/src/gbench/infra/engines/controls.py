@@ -1,4 +1,4 @@
-"""The two engines that do not navigate.
+"""The three engines that do not navigate.
 
 They implement the same port as the real ones, which is the point: the controls
 go through the same rendering, the same letter parser and the same scorer, so a
@@ -8,6 +8,18 @@ rather than by argument.
 **closed-book** — the model, the item, no document. Its accuracy is the floor
 below which a reading engine has demonstrated nothing. Items it answers are
 flagged `leaky` and drop out of the headline.
+
+On a corpus of published papers this control stops being a formality. The model
+has very likely read the paper, or its abstract, or a dozen posts about it —
+a benchmark built on arXiv without a closed-book number is measuring
+memorisation and calling it retrieval.
+
+**abstract-only** — the model, the item, and the title and abstract. Papers
+have a built-in summary at the top, and a question answerable from it makes
+navigation free: the engine reads the first section, stops, and scores. This
+control measures how much of the suite is that, and the linter refuses items
+whose gold refs are in the abstract — the control is what catches the ones that
+are answerable from it anyway, by paraphrase.
 
 **oracle-context** — the model, the item, and only the text of `gold_refs`. Its
 accuracy is the ceiling this model can reach with perfect retrieval, so
@@ -62,6 +74,54 @@ class ClosedBookEngine:
 
     async def answer(self, doc: BenchDocument, item: RenderedItem) -> EngineAnswer:
         prompt = f"{_CLOSED_BOOK_NOTE}\n\n{item.prompt}"
+        started = time.monotonic()
+        try:
+            text = await self._model.complete(
+                [system(_SYSTEM), user(prompt)], max_tokens=self._max_tokens
+            )
+        except Exception as exc:
+            return EngineAnswer(text="", error=f"{type(exc).__name__}: {exc}")
+        return EngineAnswer(
+            text=text,
+            llm_calls=1,
+            prompt_chars=len(prompt),
+            wall_s=round(time.monotonic() - started, 3),
+        )
+
+    async def aclose(self) -> None:
+        await self._model.aclose()
+
+
+class AbstractOnlyEngine:
+    """The paper's own summary, and nothing else."""
+
+    def __init__(
+        self,
+        model: ChatModel,
+        abstract_of: Callable[[str], str],
+        *,
+        max_tokens: int = 8,
+        char_budget: int = 4_000,
+    ) -> None:
+        self._model = model
+        self._abstract_of = abstract_of
+        self._max_tokens = max_tokens
+        self._char_budget = char_budget
+
+    @property
+    def name(self) -> str:
+        return "abstract-only"
+
+    @property
+    def capabilities(self) -> Capabilities:
+        return Capabilities(llm_calls=True, abstention_signal="none (letter E only)")
+
+    async def prepare(self, doc: BenchDocument) -> PrepareCost:
+        return PrepareCost(llm_calls=0, prompt_chars=0)
+
+    async def answer(self, doc: BenchDocument, item: RenderedItem) -> EngineAnswer:
+        abstract = self._abstract_of(doc.slug)[: self._char_budget]
+        prompt = f"Title and abstract:\n\n{abstract}\n\n---\n\n{item.prompt}"
         started = time.monotonic()
         try:
             text = await self._model.complete(

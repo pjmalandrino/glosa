@@ -4,6 +4,10 @@
 
 Le présent cahier des clauses administratives particulières fixe les conditions d'exécution du marché de travaux de réhabilitation.
 
+## Article 2 — Définitions
+
+Le montant du marché s'entend hors taxes, à l'exclusion de toute révision de prix.
+
 ## Article 4 — Délais
 
 Le délai global d'exécution est fixé à 180 jours calendaires à compter de la notification de l'ordre de service.
@@ -27,3 +31,11 @@ Une avance de 20 % du montant du marché est versée au titulaire dans les trent
 ## Article 15 — Résiliation
 
 Le pouvoir adjudicateur peut résilier le marché pour motif d'intérêt général, après information écrite du titulaire.
+
+| Tranche de montant         | Retenue de garantie      |
+|----------------------------|--------------------------|
+| Jusqu'à 500 000 EUR        | 5 % du montant du marché |
+| De 500 001 à 2 000 000 EUR | 4 % du montant du marché |
+| Au-delà de 2 000 000 EUR   | 3 % du montant du marché |
+
+Les jours calendaires comprennent les samedis, dimanches et jours fériés, sans interruption pendant la période de congés.

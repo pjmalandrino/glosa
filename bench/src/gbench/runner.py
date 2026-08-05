@@ -5,12 +5,13 @@ which is what lets the controls, glosa, and two competitors that are not
 installed go through the same code path.
 
 It does exactly one thing worth explaining. Items run concurrently, because
-1 200 runs served serially by a local 8B is hours — and concurrency **destroys
-wall-clock as a comparable metric**, since the engines then queue behind each
-other on one GPU. So every row carries `contended`, the report refuses to rank
-on contended timings, and `--latency-pass` re-runs a fixed subset at
-concurrency 1 for the p50/p95 numbers. An engine whose claim is "two round-trips
-instead of ten sequential" must not get to prove it with a contended stopwatch.
+1 920 executions served serially by a local 8B is most of a day — and
+concurrency **destroys wall-clock as a comparable metric**, since the engines
+then queue behind each other on one GPU. So every row carries `contended`, the
+report refuses to rank on contended timings, and `--latency-pass` re-runs a
+fixed subset at concurrency 1 for the p50/p95 numbers. An engine whose claim is
+"two round-trips instead of ten sequential" must not get to prove it with a
+contended stopwatch.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from gbench.domain.item import rotations_of
+from gbench.domain.item import flip_subsample, schedule
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -32,9 +33,23 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class RunPlan:
-    """What a single `gbench run` invocation will do."""
+    """What a single `gbench run` invocation will do.
 
-    rotations: int = 4
+    The default is not "four rotations of everything". At 200 items and five
+    engines that is 4 000 executions, and most of them buy nothing: what four
+    rotations of *every* item guards against is aggregate position bias, and a
+    suite of 200 gets that for free by giving each item a deterministic
+    assigned rotation (`item.assigned_rotation`). What it does not get for free
+    is per-item stability, so `flip_sample` items are swept in full.
+
+    200 items becomes 320 executions per engine instead of 800, and both
+    numbers rotation exists to produce still come out.
+    """
+
+    sweep: bool = False
+    """Four rotations of every item. Right for a 60-item suite, wasteful here."""
+    flip_sample: int = 40
+    """Items swept in full — stratified over kinds, stable between runs."""
     concurrency: int = 4
     latency_pass: bool = False
     """Serial, on a subset, for timings only."""
@@ -68,13 +83,15 @@ async def run(
 
         gate = asyncio.Semaphore(plan.effective_concurrency)
         contended = plan.effective_concurrency > 1
+        swept = frozenset(flip_subsample(selected, plan.flip_sample))
         produced = await asyncio.gather(
             *(
                 _one_item(
                     engine=engine,
                     document=documents[item.doc],
                     item=item,
-                    rotations=plan.rotations,
+                    plan=plan,
+                    swept=swept,
                     gate=gate,
                     journal=journal,
                     run_id=run_id,
@@ -96,7 +113,8 @@ async def _one_item(
     engine: Engine,
     document: BenchDocument,
     item: Item,
-    rotations: int,
+    plan: RunPlan,
+    swept: frozenset[str],
     gate: asyncio.Semaphore,
     journal: Journal,
     run_id: str,
@@ -110,7 +128,7 @@ async def _one_item(
     passed, so nothing can be captured from a loop that has since moved on.
     """
     rows: list[Row] = []
-    for rendered in rotations_of(item, rotations):
+    for rendered in schedule([item], sweep=plan.sweep or item.id in swept):
         async with gate:
             answer = await engine.answer(document, rendered)
         rows.append(

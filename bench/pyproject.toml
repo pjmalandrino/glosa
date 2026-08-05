@@ -19,6 +19,10 @@ dependencies = [
 [project.optional-dependencies]
 docling-agent = ["docling-agent", "docling-core>=2.0.0,<3.0.0"]
 pageindex = ["litellm>=1.0,<2.0"]
+# Only needed to (re)build the corpus from the PDFs the manifest pins. Docling
+# drags model weights behind it, which is precisely why `lint` and `score` are
+# built to run without it.
+convert = ["docling>=2.0.0,<3.0.0"]
 
 [project.scripts]
 gbench = "gbench.cli:main"

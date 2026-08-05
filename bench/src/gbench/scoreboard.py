@@ -9,7 +9,7 @@ makes a published number checkable.
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from gbench.domain import metrics
@@ -24,8 +24,13 @@ if TYPE_CHECKING:
     from gbench.infra.journal import Row
 
 CLOSED_BOOK = "closed-book"
+ABSTRACT_ONLY = "abstract-only"
 ORACLE = "oracle-context"
-CONTROLS = frozenset({CLOSED_BOOK, ORACLE})
+
+NO_NAVIGATION = (CLOSED_BOOK, ABSTRACT_ONLY)
+"""Controls whose success means the item did not require reading the paper."""
+
+CONTROLS = frozenset({CLOSED_BOOK, ABSTRACT_ONLY, ORACLE})
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,8 +39,17 @@ class Scoreboard:
     deltas: tuple[tuple[str, str, metrics.Interval], ...]
     signals: Mapping[str, str]
     leaky: tuple[str, ...]
-    """Items the closed-book control got right — excluded from the headline."""
+    """Items a no-navigation control got right — excluded from the headline.
+
+    Both the closed-book and the abstract-only controls feed this: an item the
+    model answers from its weights and an item answerable from the paper's own
+    summary are the same problem, which is that no reading was required."""
     policy: Policy
+    by_kind: Mapping[str, Mapping[str, float | None]] = field(default_factory=dict)
+    by_domain: Mapping[str, Mapping[str, float | None]] = field(default_factory=dict)
+    counts: Mapping[str, int] = field(default_factory=dict)
+    """Items per kind and per domain, so a breakdown cell can be read against
+    the `n` behind it."""
 
 
 def build(
@@ -71,13 +85,14 @@ def build(
         )
         raw[row.engine].append(row)
 
-    leaky = tuple(
-        sorted(
+    leaked: set[str] = set()
+    for control in NO_NAVIGATION:
+        leaked |= {
             item_id
-            for item_id, accuracy in metrics.per_item_accuracy(scored.get(CLOSED_BOOK, ())).items()
+            for item_id, accuracy in metrics.per_item_accuracy(scored.get(control, ())).items()
             if accuracy > 0.5
-        )
-    )
+        }
+    leaky = tuple(sorted(leaked))
     drop = set(leaky) if exclude_leaky else set()
 
     expected = {item.id: item.kind is ItemKind.NOT_STATED for item in items}
@@ -87,6 +102,8 @@ def build(
     oracle = _accuracy(scored.get(ORACLE, ()), drop)
 
     out: list[EngineRow] = []
+    by_kind: dict[str, Mapping[str, float | None]] = {}
+    by_domain: dict[str, Mapping[str, float | None]] = {}
     for engine in sorted(scored):
         runs = [run for run in scored[engine] if run.item_id not in drop]
         engine_rows = [row for row in raw[engine] if row.item_id not in drop]
@@ -94,6 +111,8 @@ def build(
         timings = [row.wall_s for row in engine_rows]
         contended = any(row.contended for row in engine_rows)
         accuracy = metrics.accuracy(runs)
+        by_kind[engine] = _slice(runs, {item.id: str(item.kind) for item in items})
+        by_domain[engine] = _slice(runs, {item.id: item.domain or "—" for item in items})
         out.append(
             EngineRow(
                 engine=engine,
@@ -101,6 +120,7 @@ def build(
                 lift=None if engine in CONTROLS else accuracy - closed_book,
                 headroom=None if engine in CONTROLS else oracle - accuracy,
                 flip_rate=metrics.flip_rate(runs),
+                flip_observed=metrics.flip_observed(runs),
                 unparsed_rate=metrics.rate(runs, Outcome.UNPARSED),
                 error_rate=metrics.rate(runs, Outcome.ERROR),
                 abstention_recall=recall,
@@ -126,17 +146,41 @@ def build(
         for index, left in enumerate(engines)
         for right in engines[index + 1 :]
     )
+    counts: dict[str, int] = defaultdict(int)
+    for item in items:
+        if item.id in drop:
+            continue
+        counts[str(item.kind)] += 1
+        counts[item.domain or "—"] += 1
+
     return Scoreboard(
         rows=tuple(out),
         deltas=deltas,
         signals=signals or {},
         leaky=leaky,
         policy=policy,
+        by_kind=by_kind,
+        by_domain=by_domain,
+        counts=dict(counts),
     )
 
 
 def _accuracy(runs: Iterable[ScoredRun], drop: set[str]) -> float:
     return metrics.accuracy([run for run in runs if run.item_id not in drop])
+
+
+def _slice(runs: Iterable[ScoredRun], label: Mapping[str, str]) -> dict[str, float | None]:
+    """Accuracy per label — per kind, per domain.
+
+    Averaged over items, like the headline: four rotations of one question are
+    one observation, and a breakdown that forgot that would disagree with the
+    number above it.
+    """
+    per_item = metrics.per_item_accuracy(runs)
+    grouped: dict[str, list[float]] = defaultdict(list)
+    for item_id, accuracy in per_item.items():
+        grouped[label.get(item_id, "—")].append(accuracy)
+    return {key: sum(values) / len(values) for key, values in grouped.items()}
 
 
 def _mean(values: Iterable[int | None]) -> float | None:

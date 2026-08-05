@@ -550,13 +550,14 @@ one release, selected by `REASONING_RUNNER=docling-agent|glosa`.
 
 Still open:
 
-1. **Benchmark corpus** — ~6 representative PDFs + 60 questions with known
-   answers, ideally from a real engagement. The *format* is now settled and the
-   harness that consumes it is built ([`EVAL.md`](EVAL.md)); what is left is
-   authoring, and the documents have to be redistributable, which rules out a
-   real engagement's PDFs. It gates P2's *acceptance criteria*, not P2's code,
-   so the loop work stands and is measured retroactively once the corpus
-   exists.
+1. **Benchmark corpus** — **40 arXiv papers, 5 questions each** ([`EVAL.md`](EVAL.md)).
+   The format is settled and the harness that consumes it is built; what is
+   left is selection (a command — `gbench manifest`, restricted to CC-BY and to
+   papers posted after the model's cutoff) and about a day of authoring. Papers
+   rather than a real engagement's PDFs because the corpus has to be
+   redistributable, or nobody can re-check a published number. It gates P2's
+   *acceptance criteria*, not P2's code, so the loop work stands and is measured
+   retroactively once the corpus exists.
 2. **Upstreaming** — the `IndexError`, the page-summary `break`, and the
    flat-section depth bug are worth PRs to `docling-agent` regardless of what
    Studio ends up running. Cheap, and good citizenship.

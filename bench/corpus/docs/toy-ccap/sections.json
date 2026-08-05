@@ -1,0 +1,100 @@
+{
+ "slug": "toy-ccap",
+ "elements": [
+  {
+   "ref": "#/texts/0",
+   "label": "SectionHeader",
+   "text": "Marché public de travaux — CCAP"
+  },
+  {
+   "ref": "#/texts/1",
+   "label": "SectionHeader",
+   "text": "Article 1 — Objet"
+  },
+  {
+   "ref": "#/texts/2",
+   "label": "Paragraph",
+   "text": "Le présent cahier des clauses administratives particulières fixe les conditions d'exécution du marché de travaux de réhabilitation."
+  },
+  {
+   "ref": "#/texts/3",
+   "label": "SectionHeader",
+   "text": "Article 2 — Définitions"
+  },
+  {
+   "ref": "#/texts/4",
+   "label": "Paragraph",
+   "text": "Le montant du marché s'entend hors taxes, à l'exclusion de toute révision de prix."
+  },
+  {
+   "ref": "#/texts/5",
+   "label": "SectionHeader",
+   "text": "Article 4 — Délais"
+  },
+  {
+   "ref": "#/texts/6",
+   "label": "Paragraph",
+   "text": "Le délai global d'exécution est fixé à 180 jours calendaires à compter de la notification de l'ordre de service."
+  },
+  {
+   "ref": "#/texts/7",
+   "label": "SectionHeader",
+   "text": "Article 7 — Pénalités de retard"
+  },
+  {
+   "ref": "#/texts/8",
+   "label": "Paragraph",
+   "text": "Les pénalités de retard sont fixées à 1/1000 du montant du marché par jour calendaire de retard, sans mise en demeure préalable."
+  },
+  {
+   "ref": "#/texts/9",
+   "label": "SectionHeader",
+   "text": "Article 9 — Retenue de garantie"
+  },
+  {
+   "ref": "#/texts/10",
+   "label": "Paragraph",
+   "text": "La retenue de garantie est fixée à 5 % du montant du marché et peut être remplacée par une garantie à première demande."
+  },
+  {
+   "ref": "#/texts/11",
+   "label": "SectionHeader",
+   "text": "Article 12 — Assurances"
+  },
+  {
+   "ref": "#/texts/12",
+   "label": "Paragraph",
+   "text": "Le titulaire justifie d'une assurance de responsabilité civile d'un montant minimal de 2 000 000 EUR par sinistre."
+  },
+  {
+   "ref": "#/texts/13",
+   "label": "SectionHeader",
+   "text": "Article 13 — Avance"
+  },
+  {
+   "ref": "#/texts/14",
+   "label": "Paragraph",
+   "text": "Une avance de 20 % du montant du marché est versée au titulaire dans les trente jours suivant la notification."
+  },
+  {
+   "ref": "#/texts/15",
+   "label": "SectionHeader",
+   "text": "Article 15 — Résiliation"
+  },
+  {
+   "ref": "#/texts/16",
+   "label": "Paragraph",
+   "text": "Le pouvoir adjudicateur peut résilier le marché pour motif d'intérêt général, après information écrite du titulaire."
+  },
+  {
+   "ref": "#/tables/0",
+   "label": "Table",
+   "text": "<table><tr><th>Tranche de montant</th><th>Retenue de garantie</th></tr><tr><td>Jusqu&#x27;à 500 000 EUR</td><td>5 % du montant du marché</td></tr><tr><td>De 500 001 à 2 000 000 EUR</td><td>4 % du montant du marché</td></tr><tr><td>Au-delà de 2 000 000 EUR</td><td>3 % du montant du marché</td></tr></table>"
+  },
+  {
+   "ref": "#/texts/17",
+   "label": "Footnote",
+   "text": "Les jours calendaires comprennent les samedis, dimanches et jours fériés, sans interruption pendant la période de congés."
+  }
+ ]
+}

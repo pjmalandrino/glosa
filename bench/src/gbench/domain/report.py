@@ -49,9 +49,14 @@ class EngineRow:
     accuracy: float
     lift: float | None
     headroom: float | None
-    flip_rate: float
+    flip_rate: float | None
     unparsed_rate: float
     error_rate: float
+    flip_observed: int
+    """How many items were actually seen at more than one rotation.
+
+    `flip_rate` over three items is not a rate; printing the count next to it
+    is cheaper than explaining that every time."""
     abstention_recall: float | None
     false_abstention: float | None
     hit_at_1: float | None
@@ -74,6 +79,7 @@ HEADERS: tuple[tuple[str, str], ...] = (
     ("hit_at_1", "hit@1"),
     ("hit_at_3", "hit@3"),
     ("flip_rate", "flip"),
+    ("flip_observed", "flip n"),
     ("unparsed_rate", "unparsed"),
     ("error_rate", "error"),
     ("abstention_recall", "abst. recall"),
@@ -131,6 +137,27 @@ def capabilities(signals: Mapping[str, str]) -> str:
     """
     out = ["| engine | abstention signal |", "| --- | --- |"]
     out += [f"| {engine} | {signal} |" for engine, signal in signals.items()]
+    return "\n".join(out)
+
+
+def breakdown(title: str, matrix: Mapping[str, Mapping[str, float | None]]) -> str:
+    """Engines down the side, kinds or domains across the top.
+
+    MMLU reports per subject rather than one average, and the reason applies
+    here: an engine that is 20 points behind on `table` and level everywhere
+    else has a serializer problem, not a navigation problem, and the headline
+    number cannot tell you which. Columns with an `n` too small to mean
+    anything are still printed — hiding them would misrepresent coverage — so
+    read them against the per-column counts in the suite, not on their own.
+    """
+    columns = sorted({column for row in matrix.values() for column in row})
+    if not columns:
+        return f"### {title}\n\n(nothing recorded)"
+    out = [f"### {title}", "", "| engine | " + " | ".join(columns) + " |"]
+    out.append("| --- |" + " --- |" * len(columns))
+    for engine in sorted(matrix):
+        cells = [cell(matrix[engine].get(column), pct=True) for column in columns]
+        out.append(f"| {engine} | " + " | ".join(cells) + " |")
     return "\n".join(out)
 
 

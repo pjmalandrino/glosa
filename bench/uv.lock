@@ -922,6 +922,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+convert = [
+    { name = "docling" },
+]
 docling-agent = [
     { name = "docling-agent" },
     { name = "docling-core" },
@@ -940,13 +943,14 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "docling", marker = "extra == 'convert'", specifier = ">=2.0.0,<3.0.0" },
     { name = "docling-agent", marker = "extra == 'docling-agent'" },
     { name = "docling-core", marker = "extra == 'docling-agent'", specifier = ">=2.0.0,<3.0.0" },
     { name = "glosa", editable = "../" },
     { name = "litellm", marker = "extra == 'pageindex'", specifier = ">=1.0,<2.0" },
     { name = "pyyaml", specifier = ">=6.0,<7.0" },
 ]
-provides-extras = ["docling-agent", "pageindex"]
+provides-extras = ["docling-agent", "pageindex", "convert"]
 
 [package.metadata.requires-dev]
 dev = [

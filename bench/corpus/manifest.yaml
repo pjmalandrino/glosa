@@ -1,0 +1,26 @@
+# The corpus's provenance. This file *is* the corpus: the PDFs and their
+# conversions are not committed (`infra/corpus.py` says why), and can be
+# rebuilt from here — `gbench fetch` verifies every byte against `sha256`.
+#
+# Restricted to CC-BY / CC-BY-SA / CC0 by `gbench manifest`, and re-checked by
+# `gbench lint`. arXiv's default licence lets arXiv redistribute the paper, not
+# us, and a number computed over a paper a third party cannot read is a number
+# nobody can check.
+#
+# Target (B1): 40 papers, 8 arXiv sets x 5, all posted after the model under
+# test was trained — otherwise the closed-book control is measuring how famous
+# the paper is.
+#
+#   uv run gbench manifest --sets cs,math,q-bio,physics:cond-mat \
+#                          --since 2026-03-01 --until 2026-05-31 --per-set 5
+#   uv run gbench fetch      # pins sha256
+#   uv run gbench convert    # writes docling.json, doc.md, sections.json
+
+documents:
+  # Not a paper: the generated fixture that lets the harness run in CI with no
+  # network and no GPU. `generated: true` exempts it from fetch.
+  - slug: toy-ccap
+    title: Marché public de travaux — CCAP (fixture)
+    generated: true
+    license: https://creativecommons.org/publicdomain/zero/1.0/
+    primary_category: fixture

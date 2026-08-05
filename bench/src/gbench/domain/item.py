@@ -12,6 +12,7 @@ string the bench controls, so it is built in exactly one place.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING
@@ -39,17 +40,41 @@ INSTRUCTION = "Answer with a single letter: A, B, C, D or E."
 
 
 class ItemKind(StrEnum):
-    LOOKUP = "lookup"
-    """The answer sits in one section."""
+    """Five kinds, and every paper contributes exactly one of each.
 
-    CROSSREF = "crossref"
-    """It takes two: a definition in one place, applied in another."""
+    Not a taxonomy for its own sake: each kind is a place where the three
+    engines are built differently, so the per-kind breakdown is where the
+    headline accuracy stops being one number and starts being an explanation.
+    Five kinds x forty papers is also what makes the quota exact — the suite
+    cannot drift toward the easy kind, because there is no room for it to.
+    """
+
+    LOOKUP = "lookup"
+    """A stated fact, in one section of running prose. The baseline."""
 
     TABLE = "table"
-    """A cell, not a paragraph. Flattening the table loses it."""
+    """A cell of a results table.
+
+    glosa serializes tables as HTML, `docling-agent` flattens them outside page
+    mode, PageIndex sees whatever the markdown export produced. Reading the
+    right table and the wrong row scores zero, which is the point."""
+
+    CROSSREF = "crossref"
+    """Two sections: a symbol defined in the method, used in the results."""
+
+    PERIPHERAL = "peripheral"
+    """The answer is outside the main prose flow — a figure caption, a
+    footnote, an appendix.
+
+    A reader that walks headings from the top and stops when it has enough
+    never gets there. On a paper this is the most common real failure."""
 
     NOT_STATED = "not_stated"
-    """The value is absent from the document. `E` is correct."""
+    """The value is absent from the paper. `E` is correct."""
+
+
+PER_PAPER: tuple[ItemKind, ...] = tuple(ItemKind)
+"""The quota: one item of each kind per paper, checked by the linter."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +89,13 @@ class Item:
     """`A`..`D` → option text. `E` is added by `render`, never authored."""
     answer: str
     """`A`..`D`, or `E` on a `not_stated` item."""
+    domain: str = ""
+    """The paper's field — arXiv's primary category, e.g. `cs.CL`, `q-bio.NC`.
+
+    MMLU reports per subject, and so does this: an engine strong on machine
+    learning papers and weak on condensed matter has told you something a
+    single average hides. Carried on the item rather than looked up at scoring
+    time, so a journal stays scoreable on its own."""
     gold_refs: tuple[str, ...] = ()
     """Where the answer lives in the host's projection. The free retrieval
     label on every item — `metrics.hit_at_k` is computed from it."""
@@ -158,6 +190,62 @@ def rotations_of(item: Item, count: int) -> Sequence[RenderedItem]:
     if not 1 <= count <= len(LETTERS):
         raise ValueError(f"rotations must be 1..{len(LETTERS)}, got {count}")
     return [item.render(index) for index in range(count)]
+
+
+def assigned_rotation(item_id: str) -> int:
+    """The one rotation this item is shown at when the suite is not swept.
+
+    Stable across runs and uniform over a suite of any size, so 200 items put
+    the right answer in all four positions about equally often. That kills the
+    *aggregate* position bias — which is what would otherwise inflate or deflate
+    an engine's headline — at 1x the cost instead of 4x.
+
+    What it cannot measure is per-item instability: whether a given engine
+    changes its mind when the options move. That needs the same item at several
+    rotations, and `schedule` buys it on a subsample.
+    """
+    digest = hashlib.sha256(item_id.encode()).digest()
+    return digest[0] % len(LETTERS)
+
+
+def flip_subsample(items: Sequence[Item], size: int) -> tuple[str, ...]:
+    """`size` item ids, spread evenly across kinds and papers.
+
+    Deterministic: sorting by (kind, id) and striding gives a sample balanced
+    over kinds by construction, and the same sample on every run — so a
+    `flip_rate` moving between two runs is the engine moving, not the sample.
+    """
+    if size <= 0 or not items:
+        return ()
+    ordered = sorted(items, key=lambda item: (str(item.kind), item.id))
+    if size >= len(ordered):
+        return tuple(item.id for item in ordered)
+    stride = len(ordered) / size
+    return tuple(ordered[int(index * stride)].id for index in range(size))
+
+
+def schedule(
+    items: Sequence[Item], *, sweep: bool = False, flip_sample: int = 0
+) -> list[RenderedItem]:
+    """Every (item, rotation) the run will execute.
+
+    `sweep` runs the full four rotations on everything — right for a small
+    suite, wasteful at 200 items across six engines. The default gives each item
+    its assigned rotation and sweeps only `flip_sample` of them: 200 items with
+    a 40-item sweep is 320 executions instead of 800, and still reports both
+    numbers rotation was there to produce.
+    """
+    if sweep:
+        return [rendered for item in items for rendered in rotations_of(item, len(LETTERS))]
+
+    swept = set(flip_subsample(items, flip_sample))
+    out: list[RenderedItem] = []
+    for item in items:
+        if item.id in swept:
+            out.extend(rotations_of(item, len(LETTERS)))
+        else:
+            out.append(item.render(assigned_rotation(item.id)))
+    return out
 
 
 def unrotate(letter: str, rotation: int) -> str:

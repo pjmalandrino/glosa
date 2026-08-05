@@ -29,13 +29,19 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from gbench.domain.item import ABSTAIN_LETTER, LETTERS, ItemKind
+from gbench.domain.item import ABSTAIN_LETTER, LETTERS, PER_PAPER, ItemKind
 from gbench.domain.scoring import fold, letter_distribution
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Iterable, Mapping, Sequence
 
     from gbench.domain.item import Item
+
+REDISTRIBUTABLE = ("creativecommons.org/licenses/by", "creativecommons.org/publicdomain", "cc0")
+"""Licence substrings that permit committing the paper's text.
+
+CC-BY, CC-BY-SA and CC0. arXiv's default non-exclusive licence is deliberately
+absent — it lets arXiv distribute the paper, not us."""
 
 CHI2_CRIT_DF4_P05 = 9.488
 """χ² critical value, 4 degrees of freedom (five letters), alpha = 0.05.
@@ -73,13 +79,19 @@ unknown — the linter reports that rather than raising."""
 DocText = Callable[[str], str]
 """doc slug → the whole document's text."""
 
+AbstractRefs = Callable[[str], "Sequence[str]"]
+"""doc slug → the refs that make up its title and abstract."""
+
 
 def lint(
     items: Sequence[Item],
     *,
     text_of: TextOf,
     doc_text: DocText,
+    abstract_refs: AbstractRefs | None = None,
+    licenses: Mapping[str, str] | None = None,
     leaky: Iterable[str] = (),
+    require_quota: bool = True,
 ) -> list[Finding]:
     """Every check, in one pass. Empty list means the suite is publishable."""
     findings: list[Finding] = []
@@ -90,6 +102,11 @@ def lint(
     findings += _check_key_balance(items)
     findings += _check_longest_option(items)
     findings += _check_leaky(items, leaky)
+    findings += _check_quota(items, require_quota=require_quota)
+    if abstract_refs is not None:
+        findings += _check_abstract(items, abstract_refs)
+    if licenses is not None:
+        findings += _check_licences(items, licenses)
     return findings
 
 
@@ -143,28 +160,67 @@ def _check_gold_quotes(items: Sequence[Item], text_of: TextOf) -> list[Finding]:
     return out
 
 
+VALUE_SHAPED = frozenset({ItemKind.LOOKUP, ItemKind.TABLE, ItemKind.NOT_STATED})
+"""Kinds whose options are values — a rate, an amount, a date.
+
+A `crossref` or `peripheral` item asks something a value cannot answer, so its
+options are clauses the author recombined rather than spans lifted out of the
+text. Demanding a verbatim source from those would produce a warning on every
+one of them, and a check that always fires is a check everybody learns to
+ignore."""
+
+
 def _check_distractors(items: Sequence[Item], text_of: TextOf, doc_text: DocText) -> list[Finding]:
+    """Two different questions, and only one of them is about the document.
+
+    *Did the author invent this option?* — checked verbatim, and only where the
+    options are values.
+
+    *Did the author lie about where it came from?* — checked wherever a
+    `distractor_refs` entry claims a source. That one is an error at any kind:
+    an unverifiable provenance note is worse than none, because it looks like
+    evidence.
+    """
     out: list[Finding] = []
     for item in items:
         whole = fold(doc_text(item.doc))
         gold_text = fold(" ".join(text_of(item.doc, ref) for ref in item.gold_refs))
+        claimed = dict(item.distractor_refs)
+
         for letter in LETTERS:
             if letter == item.answer:
                 continue
             option = fold(item.options[letter])
             if len(option) < 4:
                 continue
-            if whole and option not in whole:
+
+            ref = claimed.get(letter, "")
+            if ref:
+                if option not in fold(text_of(item.doc, ref)):
+                    out.append(
+                        Finding(
+                            Severity.ERROR,
+                            "distractor_source",
+                            item.id,
+                            f"option {letter} claims to come from {ref} and is not in it",
+                        )
+                    )
+            elif item.kind in VALUE_SHAPED and whole and option not in whole:
                 out.append(
                     Finding(
                         Severity.WARN,
                         "distractor_source",
                         item.id,
-                        f"option {letter} appears nowhere in the document — invented "
-                        f"distractors make the item a common-sense question",
+                        f"option {letter} appears nowhere in the document — an invented "
+                        f"value turns the item into a common-sense question",
                     )
                 )
-            if gold_text and option in gold_text:
+
+            # On a table item the distractors are *other rows of the same
+            # table*, and that is the whole difficulty: find the right table,
+            # then the right row. Forbidding the overlap there would forbid
+            # the only good distractors the kind has.
+            if item.kind is not ItemKind.TABLE and gold_text and option in gold_text:
                 out.append(
                     Finding(
                         Severity.ERROR,
@@ -173,8 +229,7 @@ def _check_distractors(items: Sequence[Item], text_of: TextOf, doc_text: DocText
                         f"option {letter} sits inside a gold ref — two defensible answers",
                     )
                 )
-            ref = dict(item.distractor_refs).get(letter, "")
-            if ref and ref in item.gold_refs:
+            if item.kind is not ItemKind.TABLE and ref and ref in item.gold_refs:
                 out.append(
                     Finding(
                         Severity.ERROR,
@@ -301,6 +356,93 @@ def _check_leaky(items: Sequence[Item], leaky: Iterable[str]) -> list[Finding]:
         for item in items
         if item.id in flagged
     ]
+
+
+def _check_quota(items: Sequence[Item], *, require_quota: bool) -> list[Finding]:
+    """One item of each kind per paper — the thing that keeps the suite honest
+    as it grows.
+
+    Without it, forty papers authored over a week drift toward whatever is
+    easiest to write, which is `lookup`, and the benchmark quietly becomes a
+    keyword-matching test. With it, every paper owes a table question, a
+    cross-reference, something out in an appendix or a caption, and one whose
+    answer is not there at all.
+    """
+    out: list[Finding] = []
+    by_doc: dict[str, list[Item]] = {}
+    for item in items:
+        by_doc.setdefault(item.doc, []).append(item)
+
+    for doc, doc_items in sorted(by_doc.items()):
+        kinds = [item.kind for item in doc_items]
+        for kind in set(kinds):
+            if kinds.count(kind) > 1:
+                out.append(
+                    Finding(
+                        Severity.ERROR,
+                        "quota",
+                        "",
+                        f"{doc}: {kinds.count(kind)} items of kind {kind} — one per paper",
+                    )
+                )
+        missing = [kind for kind in PER_PAPER if kind not in kinds]
+        if missing and require_quota:
+            out.append(
+                Finding(
+                    Severity.WARN,
+                    "quota",
+                    "",
+                    f"{doc}: missing {[str(kind) for kind in missing]}",
+                )
+            )
+    return out
+
+
+def _check_abstract(items: Sequence[Item], abstract_refs: AbstractRefs) -> list[Finding]:
+    """A paper carries its own summary at the top, and an item answerable from
+    it makes navigation free — the engine reads the first section and stops.
+
+    Refs are checked, not text: paraphrase slips through here, which is exactly
+    what the `abstract-only` control is for.
+    """
+    out: list[Finding] = []
+    for item in items:
+        inside = set(abstract_refs(item.doc))
+        overlap = [ref for ref in item.gold_refs if ref in inside]
+        if overlap:
+            out.append(
+                Finding(
+                    Severity.ERROR,
+                    "abstract_leak",
+                    item.id,
+                    f"the answer is in the abstract ({overlap}) — navigation would be free",
+                )
+            )
+    return out
+
+
+def _check_licences(items: Sequence[Item], licenses: Mapping[str, str]) -> list[Finding]:
+    """A paper whose text we cannot redistribute cannot back a published number.
+
+    The whole point of committing the corpus is that a third party can re-score
+    our claims. A document under arXiv's default non-exclusive licence does not
+    allow that, so it does not belong in the suite however good a test it makes.
+    """
+    out: list[Finding] = []
+    for doc in sorted({item.doc for item in items}):
+        licence = licenses.get(doc, "")
+        if not licence:
+            out.append(Finding(Severity.ERROR, "licence", "", f"{doc}: no licence recorded"))
+        elif not any(token in licence.lower() for token in REDISTRIBUTABLE):
+            out.append(
+                Finding(
+                    Severity.ERROR,
+                    "licence",
+                    "",
+                    f"{doc}: {licence} does not allow redistributing the text",
+                )
+            )
+    return out
 
 
 def failed(findings: Iterable[Finding]) -> bool:

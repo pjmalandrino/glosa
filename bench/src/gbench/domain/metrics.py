@@ -1,4 +1,4 @@
-"""Aggregation — and the arithmetic that keeps a 60-item suite honest.
+"""Aggregation — and the arithmetic that keeps a 200-item suite honest.
 
 Two things here are not obvious and are the reason this is a module rather
 than three list comprehensions in the report.
@@ -8,12 +8,16 @@ four observations; they are one observation measured four times. Accuracy is
 therefore the mean over *items* of the mean over rotations, and every interval
 resamples items.
 
-**Comparisons are paired.** On 60 items an accuracy near 70 % carries a
-±11-point interval — two engines eight points apart are indistinguishable if
-compared as independent proportions. But they answer the *same* items, so the
-comparison is per-item and has far more power. `paired_delta` is the only
-sanctioned way to say one engine beats another, and it is allowed to say
-"not separable" (`EVAL.md` §5).
+**Comparisons are paired.** On 200 items an accuracy near 70 % carries a
+±6.4-point interval as an independent proportion — enough to separate engines
+ten points apart, not four. But they answer the *same* items, so the comparison
+can be made per-item, and that has far more power. `paired_delta` is the only
+sanctioned way to say one engine beats another, and it is allowed to say "not
+separable" (`EVAL.md` §5).
+
+The breakdowns are weaker than the headline and must be read that way: 40 items
+per kind is about ±14 points, 25 per domain about ±18. They are for finding a
+hypothesis, not settling one.
 """
 
 from __future__ import annotations
@@ -76,19 +80,38 @@ def rate(runs: Iterable[ScoredRun], outcome: Outcome) -> float:
     return sum(run.outcome is outcome for run in materialised) / len(materialised)
 
 
-def flip_rate(runs: Iterable[ScoredRun]) -> float:
+def flip_rate(runs: Iterable[ScoredRun]) -> float | None:
     """Share of items whose *chosen option* changes when the options move.
 
-    The position-bias number. Unparsed runs count as their own answer, since an
-    engine that emits a letter at one rotation and prose at another is also
-    unstable.
+    Computed over the items actually seen at more than one rotation, and
+    `None` when there are none. That distinction is load-bearing once the
+    default plan stops sweeping every item (`item.schedule`): a suite where
+    most items run at a single rotation would otherwise report every one of
+    them as "did not flip" and drive the number to zero, which is not
+    stability — it is not having looked.
+
+    Unparsed runs count as their own answer: an engine that emits a letter at
+    one rotation and prose at another is also unstable.
     """
     picks: dict[str, set[str]] = defaultdict(set)
+    seen_rotations: dict[str, set[int]] = defaultdict(set)
     for run in runs:
         chosen = run.chosen
         picks[run.item_id].add("?" if chosen is None else unrotate(chosen, run.rotation))
-    multi = [item for item, seen in picks.items() if len(seen) > 1]
-    return len(multi) / len(picks) if picks else 0.0
+        seen_rotations[run.item_id].add(run.rotation)
+
+    observed = [item for item, rotations in seen_rotations.items() if len(rotations) > 1]
+    if not observed:
+        return None
+    return sum(len(picks[item]) > 1 for item in observed) / len(observed)
+
+
+def flip_observed(runs: Iterable[ScoredRun]) -> int:
+    """Items seen at more than one rotation — the `n` behind `flip_rate`."""
+    seen: dict[str, set[int]] = defaultdict(set)
+    for run in runs:
+        seen[run.item_id].add(run.rotation)
+    return sum(len(rotations) > 1 for rotations in seen.values())
 
 
 def abstention(runs: Iterable[ScoredRun], *, expected: Mapping[str, bool]) -> tuple[float, float]:

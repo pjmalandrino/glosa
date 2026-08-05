@@ -1,9 +1,10 @@
-# Fixture items over the generated toy document.
+# Fixture items — five questions over the generated toy document, one of each
+# kind, exactly as a real paper owes (`domain/item.py`, PER_PAPER).
 #
-# Four questions, not sixty: their job is to exercise lint / run / score, not to
-# say anything about an engine. Every distractor is a real value from another
-# article of the same document (`EVAL.md` §3.4) — which is what makes the
-# question hard for a keyword prior, and what the linter checks.
+# Their job is to exercise lint / run / score, not to say anything about an
+# engine. But the authoring rules are the real ones: every distractor is a
+# value taken from elsewhere in the same document (`EVAL.md` §3.4), and the
+# linter checks it.
 
 - id: toy-q01
   doc: toy-ccap
@@ -15,59 +16,77 @@
     C: "2 000 000 EUR par sinistre"
     D: "180 jours calendaires"
   answer: B
-  gold_refs: ["#/texts/6"]
+  gold_refs: ["#/texts/8"]
   gold_quote: "Les pénalités de retard sont fixées à 1/1000 du montant du marché"
   distractor_refs:
-    A: "#/texts/8"
-    C: "#/texts/10"
-    D: "#/texts/4"
-  authored_by: fixture
-  authored_from: document
-
-- id: toy-q02
-  doc: toy-ccap
-  kind: lookup
-  question: "À combien s'élève la retenue de garantie ?"
-  options:
-    A: "1/1000 du montant du marché par jour calendaire de retard"
-    B: "20 % du montant du marché"
-    C: "5 % du montant du marché"
-    D: "2 000 000 EUR par sinistre"
-  answer: C
-  gold_refs: ["#/texts/8"]
-  gold_quote: "La retenue de garantie est fixée à 5 % du montant du marché"
-  distractor_refs:
-    A: "#/texts/6"
-    B: "#/texts/12"
-    D: "#/texts/10"
-  authored_by: fixture
-  authored_from: document
-
-- id: toy-q03
-  doc: toy-ccap
-  kind: lookup
-  question: "Quel est le délai global d'exécution des travaux ?"
-  options:
-    A: "180 jours calendaires"
-    B: "5 % du montant du marché"
-    C: "20 % du montant du marché"
-    D: "1/1000 du montant du marché par jour calendaire de retard"
-  answer: A
-  gold_refs: ["#/texts/4"]
-  gold_quote: "Le délai global d'exécution est fixé à 180 jours calendaires"
-  distractor_refs:
-    B: "#/texts/8"
+    A: "#/texts/10"
     C: "#/texts/12"
     D: "#/texts/6"
   authored_by: fixture
   authored_from: document
 
-# The abstention item: Article 12 covers insurance and says nothing about
+# A cell, not a paragraph. An engine that finds the right section and flattens
+# the table into one line can still read the wrong row.
+- id: toy-q02
+  doc: toy-ccap
+  kind: table
+  question: "Selon le barème, quelle retenue de garantie s'applique à un marché de 1 200 000 EUR ?"
+  options:
+    A: "5 % du montant du marché"
+    B: "3 % du montant du marché"
+    C: "4 % du montant du marché"
+    D: "20 % du montant du marché"
+  answer: C
+  gold_refs: ["#/tables/0"]
+  gold_quote: "De 500 001 à 2 000 000 EUR"
+  distractor_refs:
+    A: "#/texts/10"
+    B: "#/tables/0"
+    D: "#/texts/14"
+  authored_by: fixture
+  authored_from: document
+
+# Two sections: the base is defined in article 2, the rate applied in article 7.
+# Reading either one alone gives a defensible wrong answer.
+- id: toy-q03
+  doc: toy-ccap
+  kind: crossref
+  question: >-
+    Les pénalités de retard portent sur un montant hors taxes ou toutes taxes
+    comprises ?
+  options:
+    A: "Toutes taxes comprises, révision de prix incluse"
+    B: "Hors taxes, à l'exclusion de toute révision de prix"
+    C: "Toutes taxes comprises, hors révision de prix"
+    D: "Hors taxes, révision de prix incluse"
+  answer: B
+  gold_refs: ["#/texts/4", "#/texts/8"]
+  gold_quote: "Le montant du marché s'entend hors taxes"
+  authored_by: fixture
+  authored_from: document
+
+# Out on the edge of the reading order: a footnote no heading owns. A reader
+# that walks headings from the top and stops when it has enough never gets here.
+- id: toy-q04
+  doc: toy-ccap
+  kind: peripheral
+  question: "Les jours calendaires du délai d'exécution excluent-ils les jours fériés ?"
+  options:
+    A: "Non, ils comprennent les samedis, dimanches et jours fériés"
+    B: "Oui, seuls les jours ouvrés sont décomptés"
+    C: "Oui, sauf pendant la période de congés"
+    D: "Non, mais le décompte est interrompu pendant les congés"
+  answer: A
+  gold_refs: ["#/texts/17"]
+  gold_quote: "comprennent les samedis, dimanches et jours fériés"
+  authored_by: fixture
+  authored_from: document
+
+# The abstention item: article 12 covers insurance and says nothing about
 # décennale cover. `removed_from` names the section that would have carried it,
 # so the claim "it is absent" is auditable — and the linter checks that none of
-# the four distractors sits in that section, which would make one of them
-# defensible.
-- id: toy-q04
+# the four distractors sits in that section, which would make one defensible.
+- id: toy-q05
   doc: toy-ccap
   kind: not_stated
   question: "Quel est le montant minimal de l'assurance décennale exigée du titulaire ?"
@@ -77,11 +96,11 @@
     C: "20 % du montant du marché"
     D: "1/1000 du montant du marché par jour calendaire de retard"
   answer: E
-  removed_from: "#/texts/10"
+  removed_from: "#/texts/12"
   distractor_refs:
-    A: "#/texts/8"
-    B: "#/texts/4"
-    C: "#/texts/12"
-    D: "#/texts/6"
+    A: "#/texts/10"
+    B: "#/texts/6"
+    C: "#/texts/14"
+    D: "#/texts/8"
   authored_by: fixture
   authored_from: document
