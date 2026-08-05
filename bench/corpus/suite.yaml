@@ -1,0 +1,40 @@
+# The suite.
+#
+# `toy-ccap` is a generated fixture, not a corpus document — it is here so the
+# harness runs end to end in CI with no PDF and no GPU (`EVAL.md` §7, B0).
+#
+# B1 replaces it with six converted PDFs, chosen for the shapes that break
+# readers rather than for subject matter:
+#
+#   numbered-contract   articles named "Article 7", no descriptive headings
+#                       — kills heading-only navigation
+#   technical-report    the answers live in table cells, not paragraphs
+#   scanned-ocr         OCR noise in the text layer
+#   headingless         no headings at all — page/layout segmentation only
+#   non-english         question and document in French
+#   long-regulation     >100 sections, so the outline goes over budget
+#
+# Each keeps `source.pdf` beside `docling.json`, unused by the headline runs:
+# all three engines read the same conversion (§3.1), and measuring PageIndex's
+# own PDF parser is a separate, separately-labelled experiment.
+
+documents:
+  - toy-ccap
+
+defaults:
+  rotations: 4
+  concurrency: 4
+  model: granite3.3:8b
+  provider: ollama
+
+profiles:
+  full:
+    rotations: 4
+  smoke:
+    rotations: 1
+    items: 12
+
+# Only read when the `pageindex` engine is selected.
+pageindex:
+  script: vendor/PageIndex/run_pageindex.py
+  cache: runs/pageindex

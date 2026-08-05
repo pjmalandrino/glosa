@@ -231,7 +231,8 @@ Read from `docling_agent/agent/rag.py` @ `main` and Studio's adapter.
 ## 5. Architecture
 
 > Diagrams: [`architecture.drawio`](architecture.drawio) — page 1 is this
-> layering, page 2 is the flow of one question, page 3 is the projection.
+> layering, page 2 is the flow of one question, page 3 is the projection,
+> page 5 is the bench.
 
 Hexagonal, same discipline as Studio. Four layers, dependencies pointing inward
 only:
@@ -405,8 +406,17 @@ from reading as what glosa *is*.
     `glosa replay run.json` reproduces a trace offline. Directly serves
     Studio's debugging mission.
 18. ✅ **No stdout from library code** — structured logging + OpenTelemetry spans.
-19. ◻︎ **Eval harness** — retrieval hit-rate@k, groundedness, abstention accuracy,
+19. ◐ **Eval harness** — retrieval hit-rate@k, groundedness, abstention accuracy,
     p50/p95 latency, tokens/answer. Every phase below has a number attached.
+
+    Designed and scaffolded in [`EVAL.md`](EVAL.md) / [`../bench`](../bench): an
+    MMLU-light — multiple choice over one document, scored by exact match, no
+    LLM judge — that runs `docling-agent`, PageIndex and glosa on the same
+    conversion with the same model, against a closed-book floor and an
+    oracle-context ceiling. Shipped so far: the pure half (items, rotation, the
+    letter parser, the metrics, the corpus linter) with tests, both controls,
+    the glosa adapter, and the journal. Missing: the corpus, and the two
+    competitor adapters actually run against an installed version.
 
 ---
 
@@ -540,10 +550,13 @@ one release, selected by `REASONING_RUNNER=docling-agent|glosa`.
 
 Still open:
 
-1. **Benchmark corpus** — ~5 representative PDFs + 20 questions with known
-   answers, ideally from a real engagement. Deferred by agreement; it gates
-   P2's *acceptance criteria*, not P2's code, so the loop work can start and be
-   measured retroactively once the corpus exists.
+1. **Benchmark corpus** — ~6 representative PDFs + 60 questions with known
+   answers, ideally from a real engagement. The *format* is now settled and the
+   harness that consumes it is built ([`EVAL.md`](EVAL.md)); what is left is
+   authoring, and the documents have to be redistributable, which rules out a
+   real engagement's PDFs. It gates P2's *acceptance criteria*, not P2's code,
+   so the loop work stands and is measured retroactively once the corpus
+   exists.
 2. **Upstreaming** — the `IndexError`, the page-summary `break`, and the
    flat-section depth bug are worth PRs to `docling-agent` regardless of what
    Studio ends up running. Cheap, and good citizenship.

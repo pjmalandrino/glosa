@@ -10,3 +10,8 @@ dist/
 .ruff_cache/
 .coverage
 htmlcov/
+
+# Bench: run outputs. Journals that back a published number are committed
+# explicitly (bench/runs/*.jsonl added by hand), the rest is scratch.
+bench/runs/pageindex/
+bench/vendor/

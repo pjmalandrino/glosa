@@ -76,11 +76,31 @@ import graph and fails if a dependency points outward — `json.loads` lives in
 ## Docs
 
 - [`docs/DESIGN.md`](docs/DESIGN.md) — design, phased plan, what we do differently
+- [`docs/EVAL.md`](docs/EVAL.md) — the bench: an MMLU-light that puts
+  `docling-agent`, PageIndex and glosa on the same document with the same model
 - [`docs/INTEGRATION.md`](docs/INTEGRATION.md) — dropping glosa into Docling Studio
-- [`docs/architecture.drawio`](docs/architecture.drawio) — four diagrams: the layering,
-  the flow of one question, how a `document_json` becomes reading units, and the
-  same question run through `docling-agent`, PageIndex and glosa side by side
+- [`docs/architecture.drawio`](docs/architecture.drawio) — five diagrams: the layering,
+  the flow of one question, how a `document_json` becomes reading units, the
+  same question run through `docling-agent`, PageIndex and glosa side by side,
+  and the bench that scores all three
   (open with [diagrams.net](https://app.diagrams.net) or the VS Code extension)
+
+## Benchmark
+
+[`bench/`](bench) is a separate project with its own lockfile — measuring a
+competitor must not put `mellea` or `torch` in glosa's dependency graph. It
+asks the same multiple-choice question over the same document to all three
+engines, plus a closed-book floor and an oracle-context ceiling:
+
+```bash
+uv run --directory bench gbench lint          # keep the corpus honest — no model
+uv run --directory bench gbench run --engines glosa,closed-book,oracle-context
+uv run --directory bench gbench score
+```
+
+Running and scoring are different commands: `run` appends raw rows to a
+journal, `score` turns a journal into the table. So every number here can be
+recomputed by someone with the repository and no GPU.
 
 ## Status
 

@@ -38,3 +38,36 @@ jobs:
 
       - name: Test
         run: uv run pytest -q
+
+  bench:
+    # Its own project, its own lockfile, its own job — `docs/EVAL.md` §4.1.
+    # No competitor extra is installed here on purpose: the harness has to run
+    # end to end with nothing but glosa, on a scripted model, with no GPU.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # `--directory` rather than `--project`: the checks resolve their
+      # configuration from the working directory, and bench has its own.
+      - name: Sync dependencies
+        run: uv sync --frozen --directory bench
+
+      - name: Lint
+        run: uv run --directory bench ruff check .
+
+      - name: Format
+        run: uv run --directory bench ruff format --check .
+
+      - name: Type-check
+        run: uv run --directory bench mypy
+
+      - name: Lint the corpus
+        run: uv run --directory bench gbench lint
+
+      - name: Test
+        run: uv run --directory bench pytest -q
