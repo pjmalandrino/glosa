@@ -10,6 +10,7 @@ from __future__ import annotations
 from docling_core.types.doc import DocItemLabel, DoclingDocument
 
 from glosa.domain.budget import Budget
+from glosa.domain.index import Unit
 from glosa.domain.outline import render_outline
 from glosa.domain.reading import (
     Note,
@@ -17,13 +18,30 @@ from glosa.domain.reading import (
     Selection,
     compose,
     make_step,
+    quote_is_grounded,
     read_whole_document,
+    reading_prompt,
     select_unit,
 )
-from glosa.domain.values import RunStatus, UnitKind
+from glosa.domain.values import Excerpt, RunStatus, UnitKind
 from tests.conftest import FakeChatModel, index_of, pages, prov
 
 BUDGET_ARGS = {"outline_char_budget": 6_000, "max_tokens": None}
+
+
+def _unit() -> Unit:
+    return Unit(
+        ref="#/texts/1",
+        node_id="elem::#/texts/1",
+        title="Revenue",
+        kind=UnitKind.SECTION,
+        order=0,
+        char_len=46,
+    )
+
+
+def _excerpt(text: str) -> Excerpt:
+    return Excerpt(ref="#/texts/1", kind=UnitKind.SECTION, text=text)
 
 
 def _budget(**overrides: object) -> Budget:
@@ -250,6 +268,83 @@ async def test_composing_is_skipped_when_the_call_budget_is_spent() -> None:
 
     assert answer == "b"
     assert model.complete_calls == []
+
+
+# -- the quote: an answer has to point at a sentence ---------------------------
+
+EXCERPT = "Revenue reached 12.4M EUR, up 8% year on year."
+
+
+def _read(**kwargs: object) -> Reading:
+    base: dict[str, object] = {"sufficient": True, "response": "12.4M EUR."}
+    base.update(kwargs)
+    return Reading(**base)  # type: ignore[arg-type]
+
+
+def test_the_reading_prompt_asks_for_a_sentence_from_the_text() -> None:
+    """The instruction is the mechanism: a model that must copy a sentence out
+    cannot claim an answer the text does not contain for free."""
+    prompt = reading_prompt("q", "Revenue", EXCERPT, [])
+
+    assert "copy the exact sentence" in prompt
+    assert "If you cannot copy one, sufficient is not true." in prompt
+
+
+def test_a_quote_lifted_from_the_text_is_grounded() -> None:
+    step = make_step(
+        index=1,
+        unit=_unit(),
+        excerpt=_excerpt(EXCERPT),
+        reason="r",
+        reading=_read(quote="Revenue reached 12.4M EUR"),
+    )
+
+    assert step.grounded is True
+    assert step.quote == "Revenue reached 12.4M EUR"
+
+
+def test_an_invented_quote_is_recorded_as_ungrounded() -> None:
+    """The failure this exists to catch: the answer sounds right and the
+    sentence it cites is not in the document."""
+    step = make_step(
+        index=1,
+        unit=_unit(),
+        excerpt=_excerpt(EXCERPT),
+        reason="r",
+        reading=_read(quote="Revenue reached 15.8M EUR"),
+    )
+
+    assert step.grounded is False
+
+
+def test_claiming_an_answer_with_no_quote_at_all_is_ungrounded() -> None:
+    step = make_step(index=1, unit=_unit(), excerpt=_excerpt(EXCERPT), reason="r", reading=_read())
+
+    assert step.grounded is False
+
+
+def test_no_quote_is_due_when_the_read_was_not_sufficient() -> None:
+    """`None` and `False` are different facts: nothing was claimed here."""
+    step = make_step(
+        index=1,
+        unit=_unit(),
+        excerpt=_excerpt(EXCERPT),
+        reason="r",
+        reading=_read(sufficient=False, response="still missing the figure"),
+    )
+
+    assert step.grounded is None
+
+
+def test_retyped_accents_and_line_breaks_do_not_count_as_invention() -> None:
+    """A model that drops an accent or joins two lines is sloppy, not lying."""
+    source = "La pénalité est de 2 % par semaine,\ncumulée sur toute la période."
+
+    assert quote_is_grounded("la penalite est de 2 % par semaine, cumulee", source)
+
+
+def test_a_quote_from_a_different_section_is_not_grounded() -> None:
+    assert not quote_is_grounded("Invoices are payable within 30 days.", EXCERPT)
 
 
 # -- make_step: what the viewer gets -------------------------------------------

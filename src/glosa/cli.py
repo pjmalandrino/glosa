@@ -95,6 +95,12 @@ async def _ask(args: argparse.Namespace) -> int:
         print(f"  {flag} {step.index}. {step.ref} — {step.title}{extra}")
         print(f"      why : {step.reason}")
         print(f"      read: {step.excerpt_chars} chars, pages {list(step.pages) or '—'}")
+        if step.grounded is False:
+            # An answer whose citation is not in the text it read is the one
+            # thing a reader must not scroll past.
+            print(f"      /!\\  cited a sentence absent from this section: {step.quote[:80]!r}")
+        elif step.grounded:
+            print(f"      cite: {step.quote[:80]}")
     print()
     print(trace.answer)
     return 0 if trace.converged else 1

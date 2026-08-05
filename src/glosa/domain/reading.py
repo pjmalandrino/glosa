@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
+from glosa.domain.lexical import normalize
 from glosa.domain.outline import render_outline
 from glosa.domain.values import RunStatus, Span, Step, Trace, UnitKind
 from glosa.ports.chat import Message, system, user
@@ -55,6 +56,19 @@ class Reading(BaseModel):
         description="True if this document plainly does not contain the answer",
         default=False,
     )
+    quote: str = Field(
+        description=(
+            "When sufficient is true: the sentence from the text above that carries "
+            "the answer, copied word for word. Empty otherwise."
+        ),
+        default="",
+    )
+    """Why this exists: a model that must copy a sentence out cannot claim an
+    answer the text does not contain without the claim being checkable. The
+    check is local and free — no second call — and it is the cheapest defence
+    against a small model saying `sufficient` because what it read was
+    plausible. `to_strict_schema` makes every field required, so a
+    constrained backend has to emit it."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,9 +121,48 @@ def make_step(
         pages=excerpt.pages,
         spans=spans_of(excerpt),
         node_ids=excerpt.node_ids,
+        quote=reading.quote,
+        grounded=grounding_of(reading, excerpt.text),
         revisited=revisited,
         fallback=fallback,
     )
+
+
+def quote_is_grounded(quote: str, text: str) -> bool:
+    """True when `quote` really occurs in the text the model was shown.
+
+    Compared after folding case, accents and whitespace, so a model that
+    re-types "pénalité" as "penalite" or joins two lines is not accused of
+    inventing. Deliberately a plain substring test: it is exact about the one
+    thing that matters — *were these words in front of it* — and it costs
+    nothing.
+
+    Its blind spot is stated rather than patched: a two-word quote passes
+    trivially. That is why the verdict is recorded and not enforced.
+    """
+    needle = _flatten(quote)
+    return bool(needle) and needle in _flatten(text)
+
+
+def grounding_of(reading: Reading, text: str) -> bool | None:
+    """Whether the answer's quote checks out. None when no quote was due.
+
+    Recorded, not enforced. Making an unverified string match *reject* a
+    reading would trade a measured failure (small models over-asserting) for an
+    unmeasured one (good answers thrown away because the model paraphrased),
+    and there is no corpus yet to say which is worse. The flag is what makes
+    that measurable.
+    """
+    if not reading.sufficient:
+        return None
+    if quote_is_grounded(reading.quote, text):
+        return True
+    logger.warning("answer claims a quote absent from the text it read: %r", reading.quote[:80])
+    return False
+
+
+def _flatten(text: str) -> str:
+    return " ".join(normalize(text).split())
 
 
 def selection_prompt(
@@ -136,7 +189,9 @@ def reading_prompt(query: str, title: str, excerpt: str, notes: Sequence[Note]) 
         "- response: the complete answer if sufficient; otherwise state precisely "
         "what is still missing.\n"
         "- absent: true only if this document clearly is not about the subject of "
-        "the question at all."
+        "the question at all.\n"
+        "- quote: if sufficient is true, copy the exact sentence above that carries "
+        "the answer. If you cannot copy one, sufficient is not true."
     )
 
 
@@ -334,6 +389,8 @@ async def read_whole_document(
         pages=excerpt.pages,
         spans=spans_of(excerpt),
         node_ids=excerpt.node_ids,
+        quote=reading.quote,
+        grounded=grounding_of(reading, excerpt.text),
     )
     return step, status
 

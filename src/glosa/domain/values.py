@@ -197,6 +197,14 @@ class Step:
     The legacy `section_ref` names only the anchor; this names the whole set,
     so no consumer has to re-derive section membership and risk disagreeing
     with what was really read."""
+    quote: str = ""
+    """The sentence the model copied out as carrying the answer."""
+    grounded: bool | None = None
+    """Whether `quote` was actually found in the text this step read.
+
+    `None` when the read was not sufficient, so no quote was due — different
+    from `False`, which means the model claimed a sentence the document does
+    not contain. A consumer can show that; an eval can count it."""
     revisited: bool = False
     fallback: bool = False
     """True when the model failed to pick a valid ref and glosa chose for it."""

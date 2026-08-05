@@ -348,10 +348,29 @@ from reading as what glosa *is*.
    not_in_document | insufficient_evidence | budget_exhausted` instead of a
    boolean `converged` that conflates all four. Studio can render "this
    document does not answer that" honestly.
-7. ◻︎ **Grounding verification.** Every answer sentence must align to an evidence
+7. ◐ **Grounding verification.** Every answer sentence must align to an evidence
    span; a `groundedness` score (0–1) ships in the trace. This is the single
    biggest credibility win for a product whose selling point is *watching* the
    agent read.
+
+   **Shipped so far:** an answering read must copy out the sentence that
+   carries the answer (`Reading.quote`), and glosa checks locally that the
+   sentence is really in the text it showed — case, accents and line breaks
+   folded. The verdict lands on the step as `grounded: True | False | None`
+   (`None` = the read was not sufficient, so no quote was due). Cost: +135
+   characters of prompt, no extra call.
+
+   It is **recorded, not enforced**. Rejecting a reading on an unverified
+   string match would trade a measured failure — small models asserting
+   `sufficient` because what they read was plausible — for an unmeasured one,
+   good answers thrown away over a paraphrase. There is no corpus yet to say
+   which is worse; the flag is what will measure it. Its blind spot is stated
+   rather than patched: a two-word quote passes trivially.
+
+   This is also the cheap alternative to fine-tuning. The calibration of
+   `sufficient` is the one thing a LoRA on a 3B would plausibly buy; making
+   over-assertion *checkable* costs a prompt line and no provider lock-in, and
+   it produces the labels a fine-tune would need anyway.
 8. ✅ **Span-level provenance.** `self_ref` + charspan + page + TOPLEFT bbox per
    claim, computed with the same conventions as Studio's `infra/bbox.py`. The
    viewer can highlight the exact sentence, not the whole section.

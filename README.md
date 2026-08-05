@@ -26,6 +26,7 @@ chunkless RAG loop:
 | Retrieval prior        | none (LLM reads the outline)      | RRF shortlist + confidence gate + query expansion  |
 | Document map           | headings only                     | headings + each section's own opening line          |
 | Provenance             | `section_ref` + char count        | graph node ids + page + TOPLEFT bbox per step      |
+| Citation               | none                              | the answer copies a sentence out; glosa checks it is really there |
 | Streaming              | no                                | typed events (SSE-ready)                           |
 | Runtime deps           | `mellea`, `docling-agent`         | `httpx`, `pydantic` — not even `docling-core`      |
 

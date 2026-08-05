@@ -132,6 +132,47 @@ async def test_context_stays_flat_across_rounds() -> None:
         assert "Scope defines the works only." in body, "the note must be"
 
 
+async def test_the_answering_step_carries_its_citation_and_a_verdict() -> None:
+    """What an eval harness reads: did the answer point at a real sentence?"""
+    document_json = _contract_json()
+    model = FakeChatModel(
+        [
+            Reading(
+                sufficient=True,
+                response="2% per week, capped at 10%.",
+                quote="Late delivery incurs a penalty of 2% per week",
+            )
+        ]
+    )
+
+    trace = await HybridStrategy(model, cfg(fanout=1)).run(
+        index_of(document_json), "late delivery penalty"
+    )
+
+    assert trace.steps[0].grounded is True
+    assert trace.steps[0].quote.startswith("Late delivery incurs")
+
+
+async def test_an_answer_citing_a_sentence_the_section_lacks_is_flagged() -> None:
+    document_json = _contract_json()
+    model = FakeChatModel(
+        [
+            Reading(
+                sufficient=True,
+                response="5% per week.",
+                quote="Late delivery incurs a penalty of 5% per week",
+            )
+        ]
+    )
+
+    trace = await HybridStrategy(model, cfg(fanout=1)).run(
+        index_of(document_json), "late delivery penalty"
+    )
+
+    assert trace.status is RunStatus.ANSWERED, "recorded, not enforced — for now"
+    assert trace.steps[0].grounded is False
+
+
 async def test_the_llm_call_ceiling_stops_the_run() -> None:
     document_json = _contract_json()
     model = FakeChatModel(
