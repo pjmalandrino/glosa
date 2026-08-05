@@ -9,9 +9,13 @@ hundreds of megabytes; a git repository is the wrong place for them. So:
 * `manifest.yaml` — **committed.** arXiv id, version, SHA-256, licence,
   category. The corpus *is* this file.
 * `items/*.yaml` — **committed.** The questions, a few kilobytes.
-* `docs/<slug>/sections.json` — **committed.** Ref to text of the projected
-  paper, around 100 KB. It is what `gbench lint` checks quotes against, so the
-  corpus stays auditable with nothing downloaded.
+* `docs/<slug>/refs.json` — **committed always.** One line per projected
+  element: ref, label, character count, and the SHA-256 of its folded text. No
+  text. Enough for the quota, the abstract check and every structural claim;
+  not enough to redistribute the paper.
+* `docs/<slug>/sections.json` — **committed only under `licence_policy:
+  redistributable`.** The projected text itself, which is what makes every
+  quote checkable offline — and what restricts the corpus to CC-BY papers.
 * `docs/<slug>/source.pdf` — not committed. `gbench fetch`, verified against
   the manifest's SHA-256.
 * `docs/<slug>/docling.json`, `doc.md` — not committed. `gbench convert`.
@@ -22,8 +26,17 @@ every quote, every distractor and every published number without a GPU and
 without re-downloading forty papers — and can still reproduce the conversions
 exactly, because the manifest pins the bytes.
 
-`sections.json` is generated *from* `docling.json` and can therefore drift from
-it. `tests/test_harness.py` fails if it does, wherever both are present.
+`sections.json` and `refs.json` are generated *from* `docling.json` and can
+therefore drift from it. `tests/test_harness.py` fails if they do, wherever
+both are present.
+
+**Which policy.** `fetch-only` is the default because it is what makes the
+corpus buildable at all: restricting forty papers to CC-BY rules out most of
+arXiv, and hand-picking around that restriction is hours of licence-checking
+before a single question is written. `redistributable` is strictly better when
+the papers allow it — every quote checkable by anyone, forever, from a clone —
+so a corpus that happens to be all CC-BY should say so and get the stronger
+guarantee.
 """
 
 from __future__ import annotations
@@ -39,6 +52,7 @@ import yaml
 from glosa.infra.docling.projection import DoclingProjector
 
 from gbench.domain.item import Item, ItemKind
+from gbench.domain.lint import LicencePolicy
 from gbench.ports.engine import BenchDocument
 
 if TYPE_CHECKING:
@@ -77,6 +91,19 @@ class Section:
     text: str
     label: str = ""
 
+    @property
+    def digest(self) -> str:
+        return hashlib.sha256(text_key(self.text).encode()).hexdigest()[:16]
+
+
+def text_key(text: str) -> str:
+    """What a ref's hash is taken over: whitespace folded, nothing else.
+
+    Not the raw string — a conversion that changes one line break must not
+    read as a changed paper. Not case-folded either: a hash is for detecting
+    drift, and `lint --verify-quotes` does the semantic folding."""
+    return " ".join(text.split())
+
 
 class FileCorpus:
     """`Corpus` over a directory. Pure reads; nothing here calls a model."""
@@ -98,6 +125,9 @@ class FileCorpus:
             for entry in _load_yaml(root / "manifest.yaml").get("documents", [])
         }
         self._sections: dict[str, tuple[Section, ...]] = {}
+        self._refs: dict[str, dict[str, dict[str, Any]]] = {}
+        raw_policy = _load_yaml(root / "manifest.yaml").get("licence_policy", "fetch-only")
+        self.policy = LicencePolicy(str(raw_policy))
 
     # --- documents ------------------------------------------------------------
 
@@ -162,6 +192,28 @@ class FileCorpus:
         self._sections[slug] = found
         return found
 
+    def refs(self, slug: str) -> dict[str, dict[str, Any]]:
+        """ref → {label, chars, sha256}. Committed under every policy."""
+        if slug not in self._refs:
+            path = self.dir_of(slug) / "refs.json"
+            if path.exists():
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                self._refs[slug] = {str(row["ref"]): row for row in payload.get("elements", [])}
+            else:
+                self._refs[slug] = {
+                    section.ref: {
+                        "label": section.label,
+                        "chars": len(section.text),
+                        "sha256": section.digest,
+                    }
+                    for section in self.sections(slug)
+                }
+        return self._refs[slug]
+
+    def has_text(self, slug: str) -> bool:
+        """Whether quotes can be checked without fetching the paper."""
+        return any(section.text for section in self.sections(slug))
+
     def project(self, slug: str) -> tuple[Section, ...]:
         """Straight from `docling.json`, through glosa's own projector.
 
@@ -186,7 +238,8 @@ class FileCorpus:
         return "\n".join(section.text for section in self.sections(slug))
 
     def ref_chars(self, slug: str) -> dict[str, int]:
-        return {section.ref: len(section.text) for section in self.sections(slug)}
+        """Character counts — from `refs.json` when the text is not committed."""
+        return {ref: int(row.get("chars", 0)) for ref, row in self.refs(slug).items()}
 
     def abstract_refs(self, slug: str) -> tuple[str, ...]:
         """Title and abstract — everything before the paper's first real section.
@@ -195,7 +248,9 @@ class FileCorpus:
         heading when there is one, and otherwise everything up to the first
         heading, which is where the front matter lives.
         """
-        sections = self.sections(slug)
+        sections = self.sections(slug) or tuple(
+            Section(ref, "", str(row.get("label", ""))) for ref, row in self.refs(slug).items()
+        )
         folded = [(s, " ".join(s.text.casefold().split())) for s in sections]
         for index, (section, text) in enumerate(folded):
             if text.rstrip(" :.") in ABSTRACT_TITLES:
@@ -267,8 +322,36 @@ def _is_heading(section: Section) -> bool:
     return section.label == HEADING_LABEL
 
 
+def write_refs(path: Path, slug: str, sections: Sequence[Section]) -> None:
+    """Structure without text — committed under every policy.
+
+    What survives here is everything a reader needs to check that the corpus
+    describes the paper it claims to: which refs exist, how big each is, what
+    kind of node it is, and a hash that changes if the conversion does."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "slug": slug,
+                "elements": [
+                    {
+                        "ref": s.ref,
+                        "label": s.label,
+                        "chars": len(s.text),
+                        "sha256": s.digest,
+                    }
+                    for s in sections
+                ],
+            },
+            ensure_ascii=False,
+            indent=1,
+        ),
+        encoding="utf-8",
+    )
+
+
 def write_sections(path: Path, slug: str, sections: Sequence[Section]) -> None:
-    """Emit the committed, auditable half of a converted paper."""
+    """Emit the text too. Only under `redistributable`."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(

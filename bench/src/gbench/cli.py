@@ -27,7 +27,7 @@ from glosa.infra.llm.openai import DEFAULT_BASE_URL, OpenAIChatModel
 from glosa.ports.chat import ChatModel
 
 from gbench.domain import report
-from gbench.domain.lint import failed, lint
+from gbench.domain.lint import LicencePolicy, failed, lint
 from gbench.domain.scoring import Policy
 from gbench.infra.corpus import FileCorpus
 from gbench.infra.journal import Journal, config_hash
@@ -56,6 +56,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="do not require the five-kinds-per-paper quota (corpus still being authored)",
     )
+    check.add_argument(
+        "--verify-quotes",
+        action="store_true",
+        help="fail if the papers are not converted — the offline check cannot run without them",
+    )
 
     execute = sub.add_parser("run", help="run engines over the suite, append to the journal")
     execute.add_argument("--corpus", type=Path, default=Path("corpus"))
@@ -80,21 +85,40 @@ def build_parser() -> argparse.ArgumentParser:
     )
     execute.add_argument("--profile", choices=("full", "smoke"), default="full")
 
-    choose = sub.add_parser("manifest", help="choose redistributable papers from arXiv")
+    choose = sub.add_parser("manifest", help="build the manifest, by hand or by harvest")
     choose.add_argument("--corpus", type=Path, default=Path("corpus"))
+    choose.add_argument(
+        "--from-list",
+        type=Path,
+        default=None,
+        help="a pasted list of arXiv ids or URLs, one per line, optional category after each "
+        "— the hand-picked path, and the one that needs no licence hunting",
+    )
     choose.add_argument("--sets", default="cs,math,q-bio,physics:cond-mat")
-    choose.add_argument("--since", required=True, help="YYYY-MM-DD — after the model's cutoff")
-    choose.add_argument("--until", required=True)
+    choose.add_argument("--since", default=None, help="YYYY-MM-DD — after the model's cutoff")
+    choose.add_argument("--until", default=None)
     choose.add_argument("--per-set", type=int, default=5)
+    choose.add_argument(
+        "--policy",
+        choices=("fetch-only", "redistributable"),
+        default="fetch-only",
+        help="fetch-only commits hashes and accepts any licence; redistributable commits "
+        "the text and accepts only CC-BY or better",
+    )
     choose.add_argument("--out", type=Path, default=None, help="default: <corpus>/manifest.yaml")
 
     pull = sub.add_parser("fetch", help="download the PDFs the manifest pins")
     pull.add_argument("--corpus", type=Path, default=Path("corpus"))
     pull.add_argument("--doc", default=None)
 
-    convert = sub.add_parser("convert", help="PDF → docling.json + doc.md + sections.json")
+    convert = sub.add_parser("convert", help="PDF → docling.json + doc.md + refs.json")
     convert.add_argument("--corpus", type=Path, default=Path("corpus"))
     convert.add_argument("--doc", default=None)
+    convert.add_argument(
+        "--with-text",
+        action="store_true",
+        help="also write sections.json — only commit it under `redistributable`",
+    )
 
     table = sub.add_parser("score", help="turn a journal into the table")
     table.add_argument("--corpus", type=Path, default=Path("corpus"))
@@ -159,17 +183,32 @@ def _engines(names: list[str], args: argparse.Namespace, corpus: FileCorpus) -> 
 
 def _lint(args: argparse.Namespace) -> int:
     corpus = FileCorpus(args.corpus)
+    unreadable = [slug for slug in corpus.slugs if not corpus.has_text(slug)]
+    if args.verify_quotes and unreadable:
+        print(
+            f"--verify-quotes needs the papers: {len(unreadable)} of {len(corpus.slugs)} "
+            f"not converted. Run `gbench fetch && gbench convert`."
+        )
+        return 2
+
     findings = lint(
         corpus.items(),
         text_of=corpus.text_of,
         doc_text=corpus.doc_text,
         abstract_refs=corpus.abstract_refs,
         licenses=corpus.licenses(),
+        policy=corpus.policy,
+        has_text=corpus.has_text,
         require_quota=not args.partial,
     )
     for finding in findings:
         print(finding)
-    print(f"\n{len(corpus.items())} item(s), {len(findings)} finding(s)")
+    print(f"\n{len(corpus.items())} item(s), {len(findings)} finding(s) — policy {corpus.policy}")
+    if unreadable and not args.verify_quotes:
+        print(
+            f"{len(unreadable)} paper(s) not converted: quotes unverified. "
+            f"`gbench fetch && gbench convert && gbench lint --verify-quotes`"
+        )
     return 1 if failed(findings) else 0
 
 
@@ -267,17 +306,28 @@ def _score(args: argparse.Namespace) -> int:
 def _manifest(args: argparse.Namespace) -> int:
     """Write the corpus's provenance file. The only command that picks papers.
 
-    It prints what it *rejected* as well as what it kept: on a good day most of
-    a harvest is under arXiv's default licence, and a selection procedure whose
-    rejection rate is invisible is one nobody can sanity-check.
+    Two ways in, and the hand-picked one is not the fallback. Which fields a
+    corpus should span is a judgement call — a maths paper and an econometrics
+    paper fail a reader differently, and arXiv's firehose has no opinion about
+    that. `--from-list` takes whatever a person pasted; harvesting is for when
+    nobody has an opinion yet.
     """
     import yaml
 
-    from gbench.infra.arxiv import propose
+    from gbench.infra.arxiv import parse_list, propose
 
-    sets = [name.strip() for name in args.sets.split(",") if name.strip()]
-    candidates = propose(sets=sets, since=args.since, until=args.until, per_set=args.per_set)
+    if args.from_list:
+        candidates = parse_list(args.from_list.read_text(encoding="utf-8"))
+        source = f"{len(candidates)} paper(s) from {args.from_list}"
+    else:
+        if not (args.since and args.until):
+            raise SystemExit("harvesting needs --since and --until; or pass --from-list")
+        sets = [name.strip() for name in args.sets.split(",") if name.strip()]
+        candidates = propose(sets=sets, since=args.since, until=args.until, per_set=args.per_set)
+        source = f"{len(candidates)} paper(s) across {len(sets)} set(s)"
+
     payload = {
+        "licence_policy": args.policy,
         "documents": [
             {
                 "slug": candidate.slug,
@@ -289,19 +339,19 @@ def _manifest(args: argparse.Namespace) -> int:
                 "sha256": "",  # filled by `gbench fetch`
             }
             for candidate in candidates
-        ]
+        ],
     }
     target = args.out or (args.corpus / "manifest.yaml")
     target.write_text(yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), "utf-8")
-    print(f"{len(candidates)} paper(s) across {len(sets)} set(s) → {target}")
-    print("sha256 is empty until `gbench fetch` pins the bytes.")
+    print(f"{source} → {target}")
+    print("sha256 and licence are empty until `gbench fetch` fills them.")
     return 0
 
 
 def _fetch(args: argparse.Namespace) -> int:
     import yaml
 
-    from gbench.infra.arxiv import fetch
+    from gbench.infra.arxiv import fetch, licence_of
 
     corpus = FileCorpus(args.corpus)
     manifest = args.corpus / "manifest.yaml"
@@ -323,6 +373,13 @@ def _fetch(args: argparse.Namespace) -> int:
             print(f"{slug}: pinned {digest[:16]}…")
         else:
             print(f"{slug}: verified")
+        if not paper.license and paper.arxiv_id:
+            # Best effort, and only ever additive: under `fetch-only` a licence
+            # we could not read is a warning, not a rejection.
+            found = licence_of(paper.arxiv_id)
+            if found:
+                entry["license"] = found
+                changed = True
 
     if changed:
         manifest.write_text(yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), "utf-8")
@@ -344,7 +401,7 @@ def _convert(args: argparse.Namespace) -> int:
         print("convert needs `uv sync --extra convert` (Docling and its models)")
         return 2
 
-    from gbench.infra.corpus import Section, write_sections
+    from gbench.infra.corpus import Section, write_refs, write_sections
 
     corpus = FileCorpus(args.corpus)
     converter = DocumentConverter()
@@ -361,7 +418,9 @@ def _convert(args: argparse.Namespace) -> int:
         )
         (corpus.dir_of(slug) / "doc.md").write_text(document.export_to_markdown(), encoding="utf-8")
         sections: list[Section] = list(corpus.project(slug))
-        write_sections(corpus.dir_of(slug) / "sections.json", slug, sections)
+        write_refs(corpus.dir_of(slug) / "refs.json", slug, sections)
+        if args.with_text or corpus.policy is LicencePolicy.REDISTRIBUTABLE:
+            write_sections(corpus.dir_of(slug) / "sections.json", slug, sections)
         print(f"{slug}: {len(sections)} element(s)")
     return 0
 

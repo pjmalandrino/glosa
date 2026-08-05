@@ -134,17 +134,6 @@ def test_the_linter_catches_an_item_answerable_from_the_abstract(corpus):
     assert any(f.check == "abstract_leak" for f in findings if f.severity is Severity.ERROR)
 
 
-def test_the_linter_refuses_a_paper_we_cannot_redistribute(corpus):
-    findings = lint(
-        corpus.items(),
-        text_of=corpus.text_of,
-        doc_text=corpus.doc_text,
-        licenses={"toy-ccap": "http://arxiv.org/licenses/nonexclusive-distrib/1.0/"},
-    )
-    assert failed(findings)
-    assert any(f.check == "licence" for f in findings)
-
-
 def test_a_table_item_may_take_its_distractors_from_its_own_table(corpus):
     # The other rows of the same table are the only good distractors a table
     # question has, and finding the right table then the wrong row is exactly
@@ -250,3 +239,80 @@ async def test_leaky_items_are_flagged_and_dropped_from_the_headline(tmp_path, c
     )
     board = build(journal.read(), items)
     assert board.leaky == ("toy-q01",)
+
+
+# --- what the corpus commits ---------------------------------------------------
+
+
+def test_refs_survive_without_the_text(corpus, tmp_path):
+    """Under `fetch-only` the corpus carries hashes, not the paper.
+
+    Everything structural still has to work off them: how many elements there
+    are, how big each is, which ones are the front matter. If it did not, the
+    policy would silently disable half the linter.
+    """
+    from gbench.infra.corpus import write_refs
+
+    write_refs(tmp_path / "docs" / "toy-ccap" / "refs.json", "toy-ccap", corpus.project("toy-ccap"))
+    (tmp_path / "manifest.yaml").write_text(
+        (CORPUS / "manifest.yaml").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    (tmp_path / "items").mkdir()
+    (tmp_path / "items" / "toy-ccap.yaml").write_text(
+        (CORPUS / "items" / "toy-ccap.yaml").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+
+    textless = FileCorpus(tmp_path)
+    assert not textless.has_text("toy-ccap")
+    assert len(textless.refs("toy-ccap")) == len(corpus.refs("toy-ccap"))
+    assert textless.ref_chars("toy-ccap") == corpus.ref_chars("toy-ccap")
+    assert textless.abstract_refs("toy-ccap") == ("#/texts/0",)
+
+
+def test_an_unverifiable_quote_is_a_warning_and_says_what_to_run(corpus, tmp_path):
+    # The one thing it must not do is pass. A quote nobody checked is not a
+    # quote that holds, and a linter that returns clean on an unconverted
+    # corpus is one that will eventually bless a fabricated citation.
+    from gbench.domain.lint import Severity
+
+    findings = lint(
+        corpus.items(),
+        text_of=corpus.text_of,
+        doc_text=corpus.doc_text,
+        has_text=lambda _: False,
+    )
+    quote_findings = [f for f in findings if f.check == "gold_quote"]
+    assert quote_findings and all(f.severity is Severity.WARN for f in quote_findings)
+    assert all("gbench fetch" in f.message for f in quote_findings)
+    assert not failed(findings)
+
+
+def test_fetch_only_accepts_any_licence_and_redistributable_does_not(corpus):
+    from gbench.domain.lint import LicencePolicy
+
+    arxiv_default = {"toy-ccap": "http://arxiv.org/licenses/nonexclusive-distrib/1.0/"}
+    lenient = lint(
+        corpus.items(),
+        text_of=corpus.text_of,
+        doc_text=corpus.doc_text,
+        licenses=arxiv_default,
+        policy=LicencePolicy.FETCH_ONLY,
+    )
+    strict = lint(
+        corpus.items(),
+        text_of=corpus.text_of,
+        doc_text=corpus.doc_text,
+        licenses=arxiv_default,
+        policy=LicencePolicy.REDISTRIBUTABLE,
+    )
+    assert not failed(lenient)
+    assert failed(strict)
+
+
+def test_refs_json_has_not_drifted_from_the_conversion(corpus):
+    for slug in corpus.slugs:
+        if not corpus.converted(slug):
+            continue
+        live = {s.ref: s.digest for s in corpus.project(slug)}
+        stored = {ref: row["sha256"] for ref, row in corpus.refs(slug).items()}
+        assert stored == live, slug

@@ -138,6 +138,78 @@ def _redistributable(license_url: str) -> bool:
     return any(token in license_url.lower() for token in REDISTRIBUTABLE)
 
 
+ID_IN_LINE = re.compile(r"(?:arxiv\.org/(?:abs|pdf)/)?(\d{4}\.\d{4,5})(v\d+)?")
+
+
+def parse_list(text: str) -> list[Candidate]:
+    """A pasted list of papers → candidates. The hand-picked path, first class.
+
+    Automated selection is the exception, not the rule. Harvesting by date
+    window and licence is what you do when you have no opinion about which
+    papers to use — and having an opinion is usually better, because the fields
+    a corpus should span are a judgement call and arXiv's firehose is not.
+
+    So the format is whatever a person actually pastes: one paper per line, as
+    a bare id or a URL of either kind, an optional category after it, and `#`
+    comments so the themes can be written down beside the papers they justify.
+
+        2603.01234                      # the id alone
+        2603.05678  cs.CL               # ...with the theme it fills
+        https://arxiv.org/abs/2603.09999  math.ST
+        # Theme 3 — neuroscience: the answer is usually in the caption
+        arxiv.org/pdf/2604.00021v2  q-bio.NC
+
+    Version is optional and taken as given: `gbench fetch` pins the bytes
+    either way, so an unversioned line means "whatever is current when I
+    fetched", which is exactly what the SHA-256 then records.
+    """
+    out: list[Candidate] = []
+    seen: set[str] = set()
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        match = ID_IN_LINE.search(line)
+        if not match:
+            raise ValueError(f"no arXiv id in: {raw.strip()!r}")
+        arxiv_id, version = match.group(1), match.group(2) or "v1"
+        if arxiv_id in seen:
+            continue
+        seen.add(arxiv_id)
+        rest = line[match.end() :].strip()
+        out.append(
+            Candidate(
+                arxiv_id=arxiv_id,
+                version=version,
+                title="",  # filled by `gbench convert`, from the paper itself
+                license="",  # filled by `gbench fetch`, from the abstract page
+                primary_category=rest.split()[0] if rest else "",
+            )
+        )
+    return out
+
+
+LICENCE_IN_ABS = re.compile(
+    r'https?://(?:creativecommons\.org|arxiv\.org)/(?:licenses|publicdomain)/[^"\'\s<>]+'
+)
+
+
+def licence_of(arxiv_id: str, *, opener: object = None) -> str:
+    """The licence, read off the abstract page. Best effort, never fatal.
+
+    Under `fetch-only` a missing licence is a warning rather than an error, so
+    this failing costs a line in the manifest and not the corpus. Under
+    `redistributable` the linter will refuse the paper, which is the correct
+    outcome for a licence nobody could confirm.
+    """
+    try:
+        page = _get(f"https://arxiv.org/abs/{arxiv_id}", opener=opener).decode("utf-8", "replace")
+    except Exception:
+        return ""
+    found = LICENCE_IN_ABS.search(page)
+    return found.group(0) if found else ""
+
+
 def fetch(candidate_url: str, target: Path, *, expected_sha256: str = "") -> str:
     """Download a PDF and return its SHA-256, refusing a mismatch.
 

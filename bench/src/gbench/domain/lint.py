@@ -43,6 +43,36 @@ REDISTRIBUTABLE = ("creativecommons.org/licenses/by", "creativecommons.org/publi
 CC-BY, CC-BY-SA and CC0. arXiv's default non-exclusive licence is deliberately
 absent — it lets arXiv distribute the paper, not us."""
 
+
+class LicencePolicy(StrEnum):
+    """What the corpus commits, which decides which papers it may contain.
+
+    The two are the same question. Restricting the corpus to CC-BY was never
+    about licences for their own sake — it was the price of committing each
+    paper's text so a third party could check every quote with nothing
+    downloaded. Change what is committed and the restriction goes with it.
+    """
+
+    FETCH_ONLY = "fetch-only"
+    """Commit refs, character counts and hashes — not the paper's text.
+
+    Any licence is then usable, because nothing of the paper is redistributed
+    beyond the sentence each item quotes, which is a citation. The corpus is
+    reproduced by `gbench fetch` against a pinned SHA-256, so it is still
+    exactly reproducible; it is no longer *offline*-auditable.
+
+    The cost, stated rather than buried: verifying that a `gold_quote` really
+    is in its section now requires fetching the papers first. `lint` says
+    "not verified offline" instead of silently passing, and
+    `lint --verify-quotes` refuses to be run without the text."""
+
+    REDISTRIBUTABLE = "redistributable"
+    """Commit the projected text too. CC-BY, CC-BY-SA or CC0 only.
+
+    Strictly better when it is available — every quote checkable by anyone,
+    forever, with a clone and no network. It just rules out most of arXiv."""
+
+
 CHI2_CRIT_DF4_P05 = 9.488
 """χ² critical value, 4 degrees of freedom (five letters), alpha = 0.05.
 
@@ -90,15 +120,26 @@ def lint(
     doc_text: DocText,
     abstract_refs: AbstractRefs | None = None,
     licenses: Mapping[str, str] | None = None,
+    policy: LicencePolicy = LicencePolicy.FETCH_ONLY,
+    has_text: Callable[[str], bool] | None = None,
     leaky: Iterable[str] = (),
     require_quota: bool = True,
 ) -> list[Finding]:
-    """Every check, in one pass. Empty list means the suite is publishable."""
+    """Every check, in one pass. Empty list means the suite is publishable.
+
+    `has_text` splits the checks in two. The ref-level ones — quota, licence,
+    abstract leak, answer-key balance, provenance — need only the corpus's own
+    metadata and always run. The text-level ones need the papers, which under
+    `fetch-only` are not committed; those defer with a finding that says so
+    rather than passing silently or failing on a file that was never meant to
+    be there.
+    """
     findings: list[Finding] = []
+    readable = has_text or (lambda _: True)
     findings += _check_provenance(items)
-    findings += _check_gold_quotes(items, text_of)
-    findings += _check_distractors(items, text_of, doc_text)
-    findings += _check_not_stated(items, text_of)
+    findings += _check_gold_quotes(items, text_of, readable)
+    findings += _check_distractors(items, text_of, doc_text, readable)
+    findings += _check_not_stated(items, text_of, readable)
     findings += _check_key_balance(items)
     findings += _check_longest_option(items)
     findings += _check_leaky(items, leaky)
@@ -106,7 +147,7 @@ def lint(
     if abstract_refs is not None:
         findings += _check_abstract(items, abstract_refs)
     if licenses is not None:
-        findings += _check_licences(items, licenses)
+        findings += _check_licences(items, licenses, policy)
     return findings
 
 
@@ -128,13 +169,27 @@ def _check_provenance(items: Sequence[Item]) -> list[Finding]:
     return out
 
 
-def _check_gold_quotes(items: Sequence[Item], text_of: TextOf) -> list[Finding]:
+def _check_gold_quotes(
+    items: Sequence[Item], text_of: TextOf, readable: Callable[[str], bool]
+) -> list[Finding]:
     out: list[Finding] = []
     for item in items:
         if item.kind is ItemKind.NOT_STATED:
             continue
         if not item.gold_refs:
             out.append(Finding(Severity.ERROR, "gold_refs", item.id, "no gold ref"))
+            continue
+        if not readable(item.doc):
+            # Not a pass. The claim is unchecked, and the report says which.
+            out.append(
+                Finding(
+                    Severity.WARN,
+                    "gold_quote",
+                    item.id,
+                    "not verified offline — run `gbench fetch && gbench convert`, "
+                    "then `gbench lint --verify-quotes`",
+                )
+            )
             continue
         haystack = fold(" ".join(text_of(item.doc, ref) for ref in item.gold_refs))
         if not haystack:
@@ -170,7 +225,9 @@ one of them, and a check that always fires is a check everybody learns to
 ignore."""
 
 
-def _check_distractors(items: Sequence[Item], text_of: TextOf, doc_text: DocText) -> list[Finding]:
+def _check_distractors(
+    items: Sequence[Item], text_of: TextOf, doc_text: DocText, readable: Callable[[str], bool]
+) -> list[Finding]:
     """Two different questions, and only one of them is about the document.
 
     *Did the author invent this option?* — checked verbatim, and only where the
@@ -183,6 +240,8 @@ def _check_distractors(items: Sequence[Item], text_of: TextOf, doc_text: DocText
     """
     out: list[Finding] = []
     for item in items:
+        if not readable(item.doc):
+            continue
         whole = fold(doc_text(item.doc))
         gold_text = fold(" ".join(text_of(item.doc, ref) for ref in item.gold_refs))
         claimed = dict(item.distractor_refs)
@@ -241,7 +300,9 @@ def _check_distractors(items: Sequence[Item], text_of: TextOf, doc_text: DocText
     return out
 
 
-def _check_not_stated(items: Sequence[Item], text_of: TextOf) -> list[Finding]:
+def _check_not_stated(
+    items: Sequence[Item], text_of: TextOf, readable: Callable[[str], bool]
+) -> list[Finding]:
     """The removal has to be auditable, and it has to be checked in one place.
 
     Not the whole document: a `not_stated` item's distractors are still drawn
@@ -263,6 +324,8 @@ def _check_not_stated(items: Sequence[Item], text_of: TextOf) -> list[Finding]:
                     "no `removed_from` ref — the removal must be auditable",
                 )
             )
+            continue
+        if not readable(item.doc):
             continue
         section = fold(text_of(item.doc, item.removed_from))
         if not section:
@@ -421,16 +484,32 @@ def _check_abstract(items: Sequence[Item], abstract_refs: AbstractRefs) -> list[
     return out
 
 
-def _check_licences(items: Sequence[Item], licenses: Mapping[str, str]) -> list[Finding]:
-    """A paper whose text we cannot redistribute cannot back a published number.
+def _check_licences(
+    items: Sequence[Item], licenses: Mapping[str, str], policy: LicencePolicy
+) -> list[Finding]:
+    """What a licence has to permit depends on what the corpus commits.
 
-    The whole point of committing the corpus is that a third party can re-score
-    our claims. A document under arXiv's default non-exclusive licence does not
-    allow that, so it does not belong in the suite however good a test it makes.
+    Under `redistributable` the corpus carries each paper's text, so anything
+    short of CC-BY is an error. Under `fetch-only` it carries hashes, and any
+    licence will do — but the licence is still *recorded*, because a corpus
+    that cannot say what it is built on is not a corpus, and because switching
+    policies later must not require re-reading forty papers.
     """
     out: list[Finding] = []
     for doc in sorted({item.doc for item in items}):
         licence = licenses.get(doc, "")
+        if policy is LicencePolicy.FETCH_ONLY:
+            if not licence:
+                out.append(
+                    Finding(
+                        Severity.WARN,
+                        "licence",
+                        "",
+                        f"{doc}: no licence recorded — `gbench fetch` fills it from the "
+                        f"abstract page; not blocking under {policy}",
+                    )
+                )
+            continue
         if not licence:
             out.append(Finding(Severity.ERROR, "licence", "", f"{doc}: no licence recorded"))
         elif not any(token in licence.lower() for token in REDISTRIBUTABLE):
@@ -439,7 +518,8 @@ def _check_licences(items: Sequence[Item], licenses: Mapping[str, str]) -> list[
                     Severity.ERROR,
                     "licence",
                     "",
-                    f"{doc}: {licence} does not allow redistributing the text",
+                    f"{doc}: {licence} does not allow committing the text; either pick a "
+                    f"CC-BY paper or set `licence_policy: fetch-only`",
                 )
             )
     return out

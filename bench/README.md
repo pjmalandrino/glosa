@@ -27,14 +27,20 @@ uv run gbench score                  # declared-abstention policy
 uv run gbench score --policy strict  # re-scores the same journal
 ```
 
-Rebuilding the corpus from its manifest needs the network, and `convert` needs
-Docling:
+Building or rebuilding the corpus needs the network, and `convert` needs
+Docling. Papers are picked by hand — see
+[`corpus/THEMES.md`](corpus/THEMES.md) for the eight themes and what to look
+for — and pasted into a file, one id per line:
 
 ```bash
-uv run gbench manifest --sets cs.CL,math.ST,q-bio.NC --since 2026-03-01 --until 2026-05-31
+uv run gbench manifest --from-list corpus/papers.txt
 uv run gbench fetch                  # downloads the PDFs, pins their SHA-256
 uv sync --extra convert && uv run gbench convert
+uv run gbench lint --verify-quotes
 ```
+
+No licence hunting: under the default `fetch-only` policy the corpus commits
+hashes rather than the papers, so any licence works.
 
 Competitors live behind extras, and their adapters import inside the
 constructor — so the two commands above work on a machine with neither
@@ -64,11 +70,18 @@ journal without a GPU.
 
 ## What is committed
 
-The manifest (arXiv id, version, **SHA-256**, licence, category), the items, and
-a `sections.json` per paper — ref to text, ~100 KB. Not the PDFs or their
-conversions: `gbench fetch` + `gbench convert` rebuild those from pinned bytes.
-So a third party can verify every quote and re-score every published number
-with nothing downloaded and no GPU, and still reproduce the conversions exactly.
+The manifest (arXiv id, version, **SHA-256**, licence, category), the items, the
+journals, and a `refs.json` per paper — ref, label, character count and a hash,
+no text. Not the PDFs or their conversions: `gbench fetch` + `gbench convert`
+rebuild those byte-exactly from the pinned digests.
+
+So every published number can be re-derived from a clone with no GPU, and every
+paper reproduced exactly. Checking a `gold_quote` needs the papers, and the
+linter says so — `not verified offline` — rather than passing quietly.
+
+Set `licence_policy: redistributable` in the manifest and `convert` also writes
+`sections.json`, the projected text. Then quotes are checkable from a clone
+forever, and the corpus is restricted to CC-BY or better.
 
 ## Status
 

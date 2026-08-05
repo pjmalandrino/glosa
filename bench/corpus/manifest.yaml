@@ -2,19 +2,35 @@
 # conversions are not committed (`infra/corpus.py` says why), and can be
 # rebuilt from here — `gbench fetch` verifies every byte against `sha256`.
 #
-# Restricted to CC-BY / CC-BY-SA / CC0 by `gbench manifest`, and re-checked by
-# `gbench lint`. arXiv's default licence lets arXiv redistribute the paper, not
-# us, and a number computed over a paper a third party cannot read is a number
-# nobody can check.
+# Target (B1): 40 papers, 8 themes x 5 — see THEMES.md for which themes and
+# why. All posted after the model under test was trained, or the closed-book
+# control is measuring how famous the paper is.
 #
-# Target (B1): 40 papers, 8 arXiv sets x 5, all posted after the model under
-# test was trained — otherwise the closed-book control is measuring how famous
-# the paper is.
+# The hand-picked path (see THEMES.md, ~30 minutes):
+#
+#   uv run gbench manifest --from-list corpus/papers.txt
+#   uv run gbench fetch      # pins sha256, fills the licence where it can
+#   uv run gbench convert    # writes docling.json, doc.md, refs.json
+#   uv run gbench lint --verify-quotes
+#
+# Or harvest, when nobody has an opinion about which papers yet:
 #
 #   uv run gbench manifest --sets cs,math,q-bio,physics:cond-mat \
 #                          --since 2026-03-01 --until 2026-05-31 --per-set 5
-#   uv run gbench fetch      # pins sha256
-#   uv run gbench convert    # writes docling.json, doc.md, sections.json
+
+# What the corpus commits, which decides which licences it can contain.
+#
+#   fetch-only        refs, character counts and hashes — not the paper's text.
+#                     Any licence works. Reproducible from the pinned SHA-256,
+#                     but quotes are only checkable after `gbench fetch`.
+#   redistributable   the projected text too, so every quote is checkable from
+#                     a clone forever. CC-BY / CC-BY-SA / CC0 only, which rules
+#                     out most of arXiv.
+#
+# fetch-only by default because the alternative costs hours of licence-checking
+# before a single question gets written, and that cost falls on the part of the
+# work that actually matters.
+licence_policy: fetch-only
 
 documents:
   # Not a paper: the generated fixture that lets the harness run in CI with no

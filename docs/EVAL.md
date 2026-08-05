@@ -467,41 +467,82 @@ would report an interval about 40 % too narrow.
 
 ## 6. The corpus: forty papers
 
-**Selection is a command, not a taste.** `gbench manifest` harvests arXiv's
-OAI-PMH interface — the one endpoint that reports a per-record licence — over a
-date window and a list of sets, and keeps the first five redistributable papers
-per set. Eight sets gives forty papers and eight columns in the per-domain
-breakdown.
+### What the corpus commits decides which papers it can contain
+
+These are the same question, and getting them the wrong way round costs days.
+
+The first design restricted the corpus to CC-BY, because it committed each
+paper's projected text so a third party could check every quote from a clone
+with no network. That guarantee is real and worth having. Its price is not:
+most of arXiv is under the default non-exclusive licence, so building forty
+papers under it means checking licences one abstract page at a time, before a
+single question gets written, and rejecting most of what you would have picked.
+
+So the policy is a field in the manifest:
+
+| `licence_policy` | Commits | Accepts | Quotes checkable |
+| --- | --- | --- | --- |
+| **`fetch-only`** (default) | `refs.json` — ref, label, character count, SHA-256 of the text | any licence | after `gbench fetch && gbench convert` |
+| `redistributable` | `sections.json` too — the projected text | CC-BY, CC-BY-SA, CC0 | from a clone, forever |
+
+Under `fetch-only` nothing of the paper is redistributed beyond the sentence
+each item quotes, which is a citation. Reproducibility is unchanged — the
+manifest pins each PDF's SHA-256, so a run today and a run in a year either
+read the same bytes or fail loudly. What is lost is *offline* auditability, and
+the linter says so out loud rather than passing: an unconverted paper produces
+`gold_quote: not verified offline — run gbench fetch && gbench convert`, and
+`gbench lint --verify-quotes` refuses to run at all without the text.
+
+A corpus that happens to be all CC-BY should set `redistributable` and get the
+stronger guarantee. Most will not be.
+
+### Choosing them
+
+Two paths, and the hand-picked one is not the fallback. Which fields a corpus
+spans is a judgement call — see [`../bench/corpus/THEMES.md`](../bench/corpus/THEMES.md)
+for the eight themes and why each was chosen — and arXiv's firehose has no
+opinion about that.
 
 ```bash
-uv run gbench manifest --sets cs.CL,cs.LG,math.ST,q-bio.NC,physics:cond-mat,eess.SP,stat.ME,econ.EM \
+# by hand: paste ids into a file, one per line, optional category after each
+uv run gbench manifest --from-list corpus/papers.txt
+
+# or harvest, when nobody has an opinion yet
+uv run gbench manifest --sets cs,math,q-bio,physics:cond-mat \
                        --since 2026-03-01 --until 2026-05-31 --per-set 5
-uv run gbench fetch      # downloads the PDFs and pins their SHA-256
-uv run gbench convert    # Docling → docling.json, doc.md, sections.json
+
+uv run gbench fetch      # pins each SHA-256, fills licences where readable
+uv run gbench convert    # docling.json, doc.md, refs.json
 ```
 
-Three selection rules, each of which rules out papers we would otherwise want:
+Two selection rules survive the policy change, and one dies:
 
-1. **CC-BY, CC-BY-SA or CC0 only.** arXiv's default licence lets *arXiv*
-   redistribute the paper, not us — and a number computed over a paper a third
-   party cannot read is a number nobody can check. This rejects most of any
-   harvest, which is why `manifest` prints what it dropped. `gbench lint`
-   re-checks it, as an error.
+1. ~~CC-BY only~~ — replaced by the policy above.
 2. **Posted after the model's training cutoff.** Otherwise the closed-book
-   control is measuring how famous the paper is. The window is an argument
-   precisely so it moves when the model does.
-3. **Long enough to need navigating.** A four-page workshop note is answerable
-   by pasting the whole thing into the context, which measures nothing —
-   glosa's own `direct_char_threshold` would skip its reading loop entirely.
+   control is measuring how famous the paper is. This is the criterion with no
+   wiggle room, and it has a corollary worth stating: *a paper anyone can name
+   from memory is a paper the model has memorised.* Recommendations are the
+   wrong instrument here — pick from the recent listing.
+3. **Long enough to need navigating.** Under about eight pages the whole paper
+   fits in one context window; glosa's own `direct_char_threshold` would skip
+   its reading loop entirely, and the item would measure nothing.
 
-**Five questions per paper, one of each kind** (§2). Two hundred items, forty
-per kind, twenty-five per domain.
+**Eight themes, five papers each, five questions per paper** (§2). Two hundred
+items, forty per kind, twenty-five per domain. The themes are chosen for how
+the fields *write* rather than what they are about: a maths paper puts its
+content in numbered theorems and almost never in a table, an econometrics paper
+puts nearly all of it in one table whose columns are defined in a footnote.
+Those fail a reader in different places, which is the only reason a per-domain
+column is worth printing.
+
+### The linter that makes it trustworthy
 
 **We are writing the benchmark our own engine is measured on.** That is a real
 conflict of interest, and the only honest response is to make cheating
 mechanically visible. `gbench lint` fails the suite on:
 
-1. a `gold_quote` that is not literally in the text of its `gold_refs`;
+1. a `gold_quote` that is not literally in the text of its `gold_refs` — or,
+   when the papers are not converted, a warning naming what to run;
 2. a distractor that **claims** a source ref and is not in it — an unverifiable
    provenance note is worse than none, because it looks like evidence;
 3. a distractor invented rather than taken from the paper (on the kinds whose
@@ -512,18 +553,20 @@ mechanically visible. `gbench lint` fails the suite on:
 6. an unbalanced answer key — χ² over the letter distribution;
 7. the longest-option artefact — the correct answer being the longest string
    more often than chance;
-8. a paper whose licence does not permit redistributing its text;
+8. under `redistributable`, a paper whose licence does not permit committing
+   its text; under `fetch-only`, a missing licence is a warning, because the
+   corpus still records what it is built on;
 9. an item answerable closed-book or from the abstract, once those controls have
    run: flagged `leaky`, excluded from the headline, reported on its own line;
 10. an item authored from a trace rather than from the paper — `authored_from`
     is a required field and `trace` is not an accepted value.
 
 Plus the two things that keep it re-checkable by someone who does not trust us:
-the manifest, the items, the `sections.json` and the journals are committed, so
-any result in this repository can be re-scored — and re-verified against the
-paper's own text — without a GPU and without downloading anything; and the
-`not_stated` items name the ref the value *would* have been in, so the claim
-"it is absent" is auditable rather than asserted.
+the manifest, the items, the `refs.json` and the journals are committed, so the
+structure of every claim and every published number can be re-derived from a
+clone with no GPU — and the papers themselves rebuilt byte-exactly from the
+pinned digests; and the `not_stated` items name the ref the value *would* have
+been in, so the claim "it is absent" is auditable rather than asserted.
 
 ---
 
@@ -571,7 +614,9 @@ before a commit.
 | Size | **5 questions per paper, one of each kind = 200 items.** Enough to separate engines by ten points; the report refuses to claim four. |
 | Scoring | **MCQ, exact match.** No LLM judge — see §1. |
 | Where it lives | **`bench/`, its own project and lockfile.** Competitor dependencies never touch `glosa`'s. |
-| What is committed | **The manifest, the items, `sections.json`, the journals.** Not the PDFs or the conversions — `fetch` + `convert` rebuild them from pinned bytes. |
+| What is committed | **The manifest, the items, `refs.json`, the journals.** Not the PDFs or the conversions — `fetch` + `convert` rebuild them from pinned bytes. |
+| Licences | **`fetch-only` by default** — commit hashes, accept any licence. `redistributable` commits the text and is strictly better where the papers allow it. |
+| Selecting papers | **By hand from the recent listing, via `--from-list`.** Harvesting is for when nobody has an opinion about which fields to span. |
 | Rotation | **Assigned per item, swept on 40.** Aggregate position bias for free, per-item stability on a sample. |
 | Answer extraction | **One shared deterministic parser**, no repair prompt. An engine that cannot emit a letter scores zero and gets a named metric for it. |
 | Abstention | **Per-engine declared mapping**, plus a strict-letters re-score of the same journal. |
@@ -579,11 +624,10 @@ before a commit.
 
 Open:
 
-1. **Which eight arXiv sets.** The per-domain breakdown is only interesting if
-   the fields differ in how they write — a maths paper puts everything in
-   numbered theorems, an experimental physics paper in figure captions, an
-   econometrics paper in tables. The shortlist in §6 is a first guess and should
-   be revisited once there is one real run to look at.
+1. **Which eight themes.** `THEMES.md` is a first guess, argued from how each
+   field writes rather than measured. The per-domain column is what will say
+   whether the guess was right, and revising it after one real run is expected
+   rather than a failure.
 2. **Whether the fixture stays.** `toy-ccap` is a generated contract, not a
    paper, and it exists so CI has something to run. Once B1 lands, one small
    CC-BY paper could replace it and make the CI path identical to the real one

@@ -1,0 +1,119 @@
+{
+ "slug": "toy-ccap",
+ "elements": [
+  {
+   "ref": "#/texts/0",
+   "label": "SectionHeader",
+   "chars": 31,
+   "sha256": "7f4b63ed854a3f9d"
+  },
+  {
+   "ref": "#/texts/1",
+   "label": "SectionHeader",
+   "chars": 17,
+   "sha256": "d84740a8383231d1"
+  },
+  {
+   "ref": "#/texts/2",
+   "label": "Paragraph",
+   "chars": 131,
+   "sha256": "4e84f888b495c96f"
+  },
+  {
+   "ref": "#/texts/3",
+   "label": "SectionHeader",
+   "chars": 23,
+   "sha256": "f84a8200b7ccd161"
+  },
+  {
+   "ref": "#/texts/4",
+   "label": "Paragraph",
+   "chars": 82,
+   "sha256": "94a2e5fbf82f17ff"
+  },
+  {
+   "ref": "#/texts/5",
+   "label": "SectionHeader",
+   "chars": 18,
+   "sha256": "6c907bfe8c911b7e"
+  },
+  {
+   "ref": "#/texts/6",
+   "label": "Paragraph",
+   "chars": 112,
+   "sha256": "c3c5a7cc3de086aa"
+  },
+  {
+   "ref": "#/texts/7",
+   "label": "SectionHeader",
+   "chars": 31,
+   "sha256": "61caa34ef8ea2c04"
+  },
+  {
+   "ref": "#/texts/8",
+   "label": "Paragraph",
+   "chars": 128,
+   "sha256": "2430cf97367271d9"
+  },
+  {
+   "ref": "#/texts/9",
+   "label": "SectionHeader",
+   "chars": 31,
+   "sha256": "e97dfe49e91beb38"
+  },
+  {
+   "ref": "#/texts/10",
+   "label": "Paragraph",
+   "chars": 119,
+   "sha256": "57473dbf38a3ee68"
+  },
+  {
+   "ref": "#/texts/11",
+   "label": "SectionHeader",
+   "chars": 23,
+   "sha256": "eb1164c29ba872bd"
+  },
+  {
+   "ref": "#/texts/12",
+   "label": "Paragraph",
+   "chars": 114,
+   "sha256": "860e35b8ef71354e"
+  },
+  {
+   "ref": "#/texts/13",
+   "label": "SectionHeader",
+   "chars": 19,
+   "sha256": "7d1c9ca598fd165a"
+  },
+  {
+   "ref": "#/texts/14",
+   "label": "Paragraph",
+   "chars": 110,
+   "sha256": "83d165d9bc62b36a"
+  },
+  {
+   "ref": "#/texts/15",
+   "label": "SectionHeader",
+   "chars": 24,
+   "sha256": "bcf22f3aadd99a57"
+  },
+  {
+   "ref": "#/texts/16",
+   "label": "Paragraph",
+   "chars": 116,
+   "sha256": "4b7753271f139214"
+  },
+  {
+   "ref": "#/tables/0",
+   "label": "Table",
+   "chars": 306,
+   "sha256": "a31e7d70c1a7151c"
+  },
+  {
+   "ref": "#/texts/17",
+   "label": "Footnote",
+   "chars": 121,
+   "sha256": "8c60720fc099e1bb"
+  }
+ ]
+}

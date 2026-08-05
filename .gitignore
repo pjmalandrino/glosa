@@ -15,3 +15,15 @@ htmlcov/
 # explicitly (bench/runs/*.jsonl added by hand), the rest is scratch.
 bench/runs/pageindex/
 bench/vendor/
+
+# Bench corpus: rebuilt from manifest.yaml by `gbench fetch` + `gbench convert`,
+# byte-exact against the pinned SHA-256. refs.json is committed; sections.json
+# carries the papers' text and only belongs in git under `redistributable`
+# (the fixture is generated and CC0, so it stays).
+bench/corpus/docs/*/source.pdf
+bench/corpus/docs/*/docling.json
+bench/corpus/docs/*/doc.md
+bench/corpus/docs/*/sections.json
+!bench/corpus/docs/toy-ccap/docling.json
+!bench/corpus/docs/toy-ccap/doc.md
+!bench/corpus/docs/toy-ccap/sections.json

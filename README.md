@@ -103,9 +103,11 @@ uv run --directory bench gbench score
 
 Running and scoring are different commands: `run` appends raw rows to a
 journal, `score` turns a journal into the table. And the corpus is committed as
-a manifest — arXiv id, version, SHA-256, licence — plus the projected text of
-each paper. So every number here can be re-derived, and every quote re-checked,
-by someone with the repository, no GPU and nothing downloaded.
+a manifest — arXiv id, version, SHA-256, licence — plus each paper's structure,
+so every number can be re-derived from a clone with no GPU and every paper
+rebuilt byte-exactly. The papers are picked by hand, by design —
+[`bench/corpus/THEMES.md`](bench/corpus/THEMES.md) says which eight themes and
+why each one breaks a reader somewhere different.
 
 ## Status
 
