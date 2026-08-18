@@ -8,7 +8,7 @@ import pytest
 
 from glosa.adapters.legacy import LegacyIteration
 from glosa.adapters.studio import GlosaReasoningRunner
-from glosa.domain.errors import ReasoningParseError
+from glosa.domain.errors import BackendError, ReasoningParseError
 from glosa.domain.hybrid import HybridConfig
 from glosa.domain.reading import Reading
 from glosa.domain.values import RunStatus, Step, Trace
@@ -122,6 +122,66 @@ async def test_parse_failures_are_raised_as_the_hosts_exception(
 
     assert excinfo.value.model_id == "granite3.3:8b"
     assert excinfo.value.reason == "nope"
+
+
+class StudioBackendDown(Exception):
+    def __init__(self, *, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+class StudioBadDocument(Exception):
+    def __init__(self, *, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+async def test_backend_failures_can_be_raised_as_the_hosts_exception(flat_json: str) -> None:
+    """`is_available` deliberately does no I/O, so "Ollama is down" surfaces
+    here — as a host exception the API layer can map, not an opaque 500."""
+    runner = GlosaReasoningRunner(
+        FakeChatModel([BackendError("503 from /api/chat: warming up")]),
+        backend_error_factory=StudioBackendDown,
+    )
+    with pytest.raises(StudioBackendDown) as excinfo:
+        await runner.run(document_json=flat_json, query="q")
+
+    assert "503" in excinfo.value.reason
+
+
+async def test_document_failures_can_be_raised_as_the_hosts_exception() -> None:
+    runner = GlosaReasoningRunner(FakeChatModel([]), document_error_factory=StudioBadDocument)
+    with pytest.raises(StudioBadDocument):
+        await runner.run(document_json="[]", query="q")
+
+
+async def test_without_factories_the_typed_glosa_errors_propagate(flat_json: str) -> None:
+    """A host that prefers catching glosa's own types gets exactly those."""
+    runner = GlosaReasoningRunner(FakeChatModel([BackendError("down")]))
+    with pytest.raises(BackendError):
+        await runner.run(document_json=flat_json, query="q")
+
+
+async def test_the_hosts_tree_reader_can_be_passed_directly(flat_json: str) -> None:
+    """The INTEGRATION.md wire-up: `tree_reader=…`, no projector to name."""
+    from glosa.infra.docling.tree import BundledTreeReader
+
+    runner = GlosaReasoningRunner(
+        FakeChatModel([Reading(sufficient=True, response="12.4M")]),
+        tree_reader=BundledTreeReader(),
+    )
+    result = await runner.run(document_json=flat_json, query="revenue?")
+
+    assert result.converged is True
+
+
+async def test_projector_and_tree_reader_are_mutually_exclusive() -> None:
+    with pytest.raises(ValueError):
+        GlosaReasoningRunner(
+            FakeChatModel([]),
+            projector=DoclingProjector(),
+            tree_reader=object(),  # type: ignore[arg-type]
+        )
 
 
 # --- caching and overrides ---------------------------------------------------

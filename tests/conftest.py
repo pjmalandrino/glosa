@@ -92,6 +92,31 @@ def build_flat() -> DoclingDocument:
     return doc
 
 
+def build_nested_trailing() -> DoclingDocument:
+    """A heading's own paragraph *after* a nested sub-heading's subtree.
+
+    Reading order puts the trailing text after the `h2`'s content, but its
+    explicit parent is the `h1` — and the frontend's explicit-PARENT_OF
+    exemption keeps it with the `h1`. The discriminating shape for the
+    scoping rule: a NEXT-chain-only reading files it under the `h2`.
+    """
+    doc = DoclingDocument(name="handbook")
+    pages(doc, 1)
+    risks = doc.add_heading(text="Risks", level=1, prov=prov(1, 740))
+    doc.add_text(label=DocItemLabel.TEXT, text="Risk overview.", parent=risks, prov=prov(1, 720))
+    legal = doc.add_heading(text="Legal", level=2, parent=risks, prov=prov(1, 700))
+    doc.add_text(
+        label=DocItemLabel.TEXT, text="A dispute is pending.", parent=legal, prov=prov(1, 680)
+    )
+    doc.add_text(
+        label=DocItemLabel.TEXT,
+        text="Overall, risks remain manageable.",
+        parent=risks,
+        prov=prov(1, 660),
+    )
+    return doc
+
+
 def build_headless() -> DoclingDocument:
     """No headings at all — upstream returns the whole document as the answer."""
     doc = DoclingDocument(name="scan")

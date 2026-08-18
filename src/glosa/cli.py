@@ -5,6 +5,10 @@
 
 `ask` prints the answer and the trace; `--json` prints the whole trace as JSON,
 which is what a replay harness will consume.
+
+Exit codes: 0 — answered; 1 — ran, but the document did not answer;
+2 — the document file is missing or unreadable; 3 — the backend failed;
+4 — the payload is not a readable DoclingDocument.
 """
 
 from __future__ import annotations
@@ -13,10 +17,12 @@ import argparse
 import asyncio
 import dataclasses
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
 
+from glosa.domain.errors import DocumentParseError, GlosaError
 from glosa.domain.hybrid import HybridConfig, HybridStrategy
 from glosa.domain.index import DocIndex
 from glosa.domain.outline import render_outline
@@ -37,9 +43,24 @@ def build_parser() -> argparse.ArgumentParser:
     ask.add_argument("--provider", choices=("ollama", "openai"), default="ollama")
     ask.add_argument("--base-url", default=None)
     ask.add_argument("--model", default="granite3.3:8b")
-    ask.add_argument("--api-key", default=None)
+    ask.add_argument(
+        "--api-key",
+        default=None,
+        help="bearer token; falls back to $GLOSA_API_KEY, then $OPENAI_API_KEY",
+    )
     ask.add_argument("--max-steps", type=int, default=HybridConfig().max_steps)
-    ask.add_argument("--timeout", type=float, default=180.0)
+    ask.add_argument(
+        "--deadline",
+        type=float,
+        default=180.0,
+        help="wall-clock budget for the whole run, in seconds",
+    )
+    ask.add_argument(
+        "--request-timeout",
+        type=float,
+        default=120.0,
+        help="HTTP timeout per model call, in seconds",
+    )
     ask.add_argument("--json", action="store_true", help="print the full trace as JSON")
 
     show = sub.add_parser("map", help="print the document map glosa navigates by")
@@ -56,17 +77,18 @@ def _index(path: Path) -> DocIndex:
 
 
 def _model_for(args: argparse.Namespace) -> ChatModel:
+    api_key = args.api_key or os.environ.get("GLOSA_API_KEY") or os.environ.get("OPENAI_API_KEY")
     if args.provider == "ollama":
         return OllamaChatModel(
             base_url=args.base_url or DEFAULT_HOST,
             model_id=args.model,
-            timeout=args.timeout,
+            timeout=args.request_timeout,
         )
     return OpenAIChatModel(
         base_url=args.base_url or DEFAULT_BASE_URL,
         model_id=args.model,
-        api_key=args.api_key,
-        timeout=args.timeout,
+        api_key=api_key,
+        timeout=args.request_timeout,
     )
 
 
@@ -74,7 +96,7 @@ async def _ask(args: argparse.Namespace) -> int:
     index = _index(args.document)
     model = _model_for(args)
     strategy = HybridStrategy(
-        model, HybridConfig(max_steps=args.max_steps, deadline_s=args.timeout)
+        model, HybridConfig(max_steps=args.max_steps, deadline_s=args.deadline)
     )
     try:
         trace = await strategy.run(index, args.query)
@@ -83,7 +105,7 @@ async def _ask(args: argparse.Namespace) -> int:
 
     if args.json:
         print(json.dumps(_as_dict(trace), indent=2, ensure_ascii=False))
-        return 0
+        return 0 if trace.converged else 1
 
     print(f"status   : {trace.status}")
     print(f"model    : {trace.model_id}")
@@ -123,9 +145,19 @@ def _as_dict(trace: Trace) -> dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if args.command == "map":
-        return _show_map(args)
-    return asyncio.run(_ask(args))
+    try:
+        if args.command == "map":
+            return _show_map(args)
+        return asyncio.run(_ask(args))
+    except FileNotFoundError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    except DocumentParseError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 4
+    except GlosaError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 3
 
 
 if __name__ == "__main__":  # pragma: no cover

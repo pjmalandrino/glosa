@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 DEFAULT_EXCERPT_BUDGET = 8_000
 TRUNCATION_MARKER = "\n\n[… excerpt truncated to fit the context budget …]"
 SELECTION_MARKER = (
-    "\n\n[… {n} passage(s) of this section omitted; the ones matching the question are shown …]"
+    "\n\n[… {n} passage(s) of this section omitted; the best matches to the question were kept …]"
 )
 _TITLE_CLIP = 120
 _MIN_PARTIAL_CHARS = 200
@@ -107,7 +107,11 @@ class DocIndex:
         readable = self.projection.readable(include_furniture=self._include_furniture)
         if not readable:
             return
-        if self.projection.has_sections:
+        # Asked of the elements that will actually be scoped, not of the whole
+        # projection: a document whose only heading is furniture (a running
+        # title) must fall through to pages, or it collapses into one
+        # mis-titled pseudo-section.
+        if any(e.is_section for e in readable):
             self._build_sections()
             self._prune_boilerplate_leads()
             return
@@ -159,6 +163,11 @@ class DocIndex:
         index = Bm25Index(leads.items())
         for ref in leads:
             unit = self._units[ref]
+            if not tokenize(unit.lead):
+                # The tokenizer is Latin-only; a CJK/Cyrillic lead yields no
+                # tokens at all. No evidence of repetition is not evidence of
+                # boilerplate — keep it.
+                continue
             own = index.rare_terms(ref, max_share=LEAD_DF_SHARE) - set(tokenize(unit.title))
             if not own:
                 self._units[ref] = replace(unit, lead="")
@@ -382,24 +391,36 @@ def _assemble_by_relevance(
         key=lambda e: (-ranked.get(e.self_ref, 0.0), order[e.self_ref]),
     )
 
-    kept: list[Element] = []
+    kept: dict[str, str] = {}
     used = 0
+    clipped = False
     for element in by_relevance:
-        if used + len(element.text) > char_budget:
+        remaining = char_budget - used
+        if len(element.text) <= remaining:
+            kept[element.self_ref] = element.text
+            used += len(element.text)
             continue
-        kept.append(element)
-        used += len(element.text)
+        # A matching passage larger than what is left is truncated in, never
+        # skipped: dropping the best-scoring paragraph while zero-score filler
+        # filled the budget was the worst possible packing — the exact
+        # "answer inside one long paragraph" case this function exists for.
+        if ranked.get(element.self_ref, 0.0) > 0.0 and remaining > _MIN_PARTIAL_CHARS:
+            kept[element.self_ref] = element.text[:remaining]
+            used = char_budget
+            clipped = True
 
-    if not kept:  # a single element larger than the whole budget
+    if not kept:  # nothing scored and nothing fits
         return _assemble(ref=ref, kind=kind, elements=elements, char_budget=char_budget)
 
-    kept.sort(key=lambda e: order[e.self_ref])
-    omitted = sum(1 for e in elements if e.text) - len(kept)
-    parts = tuple(_part(e, e.text) for e in kept)
-    body = "\n\n".join(e.text for e in kept)
+    shown = [e for e in elements if e.self_ref in kept]
+    omitted = sum(1 for e in elements if e.text) - len(shown)
+    parts = tuple(_part(e, kept[e.self_ref]) for e in shown)
+    body = "\n\n".join(kept[e.self_ref] for e in shown)
+    if clipped:
+        body += TRUNCATION_MARKER
     if omitted:
         body += SELECTION_MARKER.format(n=omitted)
-    return Excerpt(ref=ref, kind=kind, text=body, parts=parts, truncated=bool(omitted))
+    return Excerpt(ref=ref, kind=kind, text=body, parts=parts, truncated=bool(omitted) or clipped)
 
 
 def _part(element: Element, text: str) -> ExcerptPart:

@@ -89,7 +89,7 @@ class OpenAIChatModel(HTTPChatModel):
         if not isinstance(body, dict):
             raise BackendError(f"unexpected response type: {type(body).__name__}")
         choices = body.get("choices")
-        if isinstance(choices, list) and choices:
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
             message = choices[0].get("message")
             if isinstance(message, dict):
                 content = message.get("content")

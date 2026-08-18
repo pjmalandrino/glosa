@@ -1,7 +1,12 @@
-"""The projection itself: collapses, rendering, truncation."""
+"""The projection itself: collapses, rendering, truncation, malformed input."""
 
 from __future__ import annotations
 
+import json
+
+import pytest
+
+from glosa.domain.errors import DocumentParseError
 from glosa.domain.index import TRUNCATION_MARKER
 from glosa.infra.docling.projection import DoclingProjection, node_id_for
 from tests.conftest import build_flat, index_of, pages, prov
@@ -99,6 +104,93 @@ def test_full_excerpt_covers_the_document_and_anchors_on_a_real_node(flat_json: 
     assert "supplier dispute" in excerpt.text
     assert node_id_for(excerpt.ref) in index.projection.node_ids
     assert set(excerpt.node_ids) <= index.projection.node_ids
+
+
+def test_a_cycle_in_the_children_projects_each_node_once() -> None:
+    """A corrupt `children` graph must terminate, not recurse forever."""
+    payload = json.dumps(
+        {
+            "name": "cyclic",
+            "body": {"children": [{"$ref": "#/texts/0"}]},
+            "texts": [
+                {
+                    "self_ref": "#/texts/0",
+                    "label": "text",
+                    "text": "a",
+                    "children": [{"$ref": "#/texts/1"}],
+                    "prov": [],
+                },
+                {
+                    "self_ref": "#/texts/1",
+                    "label": "text",
+                    "text": "b",
+                    "children": [{"$ref": "#/texts/0"}],
+                    "prov": [],
+                },
+            ],
+        }
+    )
+    projection = DoclingProjection.from_json(payload)
+
+    assert [e.self_ref for e in projection.elements] == ["#/texts/0", "#/texts/1"]
+
+
+def test_a_ref_listed_under_two_parents_is_projected_once() -> None:
+    """Duplicating it doubled its text in every scope, excerpt and char_len."""
+    payload = json.dumps(
+        {
+            "name": "dupes",
+            "body": {"children": [{"$ref": "#/texts/0"}, {"$ref": "#/texts/1"}]},
+            "texts": [
+                {
+                    "self_ref": "#/texts/0",
+                    "label": "text",
+                    "text": "once",
+                    "children": [{"$ref": "#/texts/1"}],
+                    "prov": [],
+                },
+                {"self_ref": "#/texts/1", "label": "text", "text": "twice?", "prov": []},
+            ],
+        }
+    )
+    projection = DoclingProjection.from_json(payload)
+
+    assert [e.self_ref for e in projection.elements] == ["#/texts/0", "#/texts/1"]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        # texts is not a list / items are not dicts
+        '{"name": "x", "body": {"children": []}, "texts": "oops"}',
+        '{"name": "x", "body": {"children": []}, "texts": [1, 2]}',
+        # garbage bbox / charspan inside a prov row
+        (
+            '{"name": "x", "body": {"children": [{"$ref": "#/texts/0"}]}, "texts": '
+            '[{"self_ref": "#/texts/0", "label": "text", "text": "t", '
+            '"prov": [{"page_no": 1, "bbox": {"l": "abc"}, "charspan": ["x", "y"]}]}]}'
+        ),
+        # pages map holding non-dicts, or not a map at all
+        '{"name": "x", "pages": {"1": "not-a-dict"}, "body": {"children": []}, "texts": []}',
+        '{"name": "x", "pages": "zzz", "body": {"children": []}, "texts": []}',
+        # a table whose grid metadata is garbage
+        (
+            '{"name": "x", "body": {"children": [{"$ref": "#/tables/0"}]}, "tables": '
+            '[{"self_ref": "#/tables/0", "label": "table", "prov": [], "data": '
+            '{"num_rows": "abc", "num_cols": null, "table_cells": '
+            '[{"text": "c", "start_row_offset_idx": "?", "end_row_offset_idx": 1, '
+            '"start_col_offset_idx": 0, "end_col_offset_idx": 1}]}}]}'
+        ),
+    ],
+)
+def test_garbage_payloads_degrade_or_raise_the_typed_error(payload: str) -> None:
+    """The port's promise: a payload that is not a document either projects in
+    a degraded form or raises `DocumentParseError` — never a raw
+    RecursionError / AttributeError / ValueError."""
+    import contextlib
+
+    with contextlib.suppress(DocumentParseError):
+        DoclingProjection.from_json(payload)
 
 
 def test_orphan_nodes_stay_addressable() -> None:

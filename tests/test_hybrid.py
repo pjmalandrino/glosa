@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 from docling_core.types.doc import DocItemLabel, DoclingDocument
 
 from glosa.domain.hybrid import HybridConfig, HybridStrategy
-from glosa.domain.reading import QueryTerms, Reading, Selection
+from glosa.domain.reading import Note, QueryTerms, Reading, Selection
 from glosa.domain.values import RunStatus
 from tests.baseline import run_baseline
 from tests.conftest import FakeChatModel, index_of, pages, prov
@@ -373,6 +374,81 @@ async def test_a_whole_round_failing_surfaces_the_error() -> None:
         raise AssertionError("expected the backend error to propagate")
 
 
+async def test_compose_failing_keeps_the_partial_trace() -> None:
+    """The notes are the substance; a flaky call while summarizing them must
+    not discard the steps already gathered."""
+    document_json = _contract_json()
+    model = FakeChatModel(
+        [
+            Reading(sufficient=False, response="a"),
+            Reading(sufficient=False, response="b"),
+            RuntimeError("backend blip while composing"),
+        ]
+    )
+    config = cfg(fanout=2, max_steps=2, decisive_ratio=WIDE)
+
+    trace = await HybridStrategy(model, config).run(
+        index_of(document_json), "works delivery invoices"
+    )
+
+    assert len(trace.steps) == 2
+    assert trace.status is RunStatus.BUDGET_EXHAUSTED
+    assert trace.answer == "b"
+
+
+async def test_a_failed_round_after_progress_keeps_the_partial_trace() -> None:
+    """A backend that served round one failing on round two does not
+    retroactively invalidate round one. Only a first-round total failure
+    propagates — there is nothing to salvage there."""
+    document_json = _contract_json()
+    model = FakeChatModel(
+        [
+            Reading(sufficient=False, response="scope says nothing about it"),
+            RuntimeError("backend down"),
+        ]
+    )
+    config = cfg(fanout=1, decisive_ratio=WIDE)
+
+    trace = await HybridStrategy(model, config).run(
+        index_of(document_json), "works delivery invoices"
+    )
+
+    assert len(trace.steps) == 1
+    assert trace.status is RunStatus.BUDGET_EXHAUSTED
+    assert trace.answer == "scope says nothing about it"
+
+
+async def test_the_deadline_bounds_a_hung_call() -> None:
+    """`deadline_s` is a contract, not a hint: an in-flight call is cancelled
+    at the deadline instead of running to the transport's own timeout."""
+
+    class HungModel(FakeChatModel):
+        async def structured(self, messages, *, schema, max_tokens=None):  # type: ignore[no-untyped-def]
+            await asyncio.sleep(30.0)
+            raise AssertionError("unreachable")
+
+    document_json = _contract_json()
+    config = cfg(fanout=1, deadline_s=0.05)
+    started = time.monotonic()
+
+    trace = await HybridStrategy(HungModel([]), config).run(
+        index_of(document_json), "late delivery penalty"
+    )
+
+    assert trace.status is RunStatus.BUDGET_EXHAUSTED
+    assert time.monotonic() - started < 5.0
+
+
+async def test_the_cheap_path_returns_a_trace_when_the_budget_is_zero(flat_json: str) -> None:
+    """Running out is an ordinary outcome on the cheap path too, not a crash."""
+    trace = await HybridStrategy(FakeChatModel([]), HybridConfig(max_steps=0)).run(
+        index_of(flat_json), "q"
+    )
+
+    assert trace.status is RunStatus.BUDGET_EXHAUSTED
+    assert trace.steps == ()
+
+
 async def test_a_short_document_still_takes_the_cheap_path(flat_json: str) -> None:
     model = FakeChatModel([Reading(sufficient=True, response="12.4M EUR.")])
     trace = await HybridStrategy(model, cfg(direct_char_threshold=6_000)).run(
@@ -443,6 +519,20 @@ async def test_the_second_round_searches_for_what_is_missing() -> None:
     assert trace.status is RunStatus.ANSWERED
     assert trace.steps[0].title == "Scope of works"
     assert trace.steps[1].title == "Invoicing", "the stated gap steered round two"
+
+
+def test_gap_notes_zero_really_disables_the_gap() -> None:
+    """`notes[-0:]` is the whole list — the exact opposite of "no gap". With
+    the gap off, the probe is the question alone, not the model's own prose."""
+    document_json = _contract_json()
+    index = index_of(document_json)
+    strategy = HybridStrategy(FakeChatModel([]), cfg(fanout=1, gap_notes=0))
+    scope = index.units[0]
+    notes = [Note(scope.ref, scope.title, "look for the invoicing terms")]
+
+    probe = strategy._probe(index, "late delivery penalty", notes, [scope.ref])
+
+    assert probe == "late delivery penalty"
 
 
 async def test_retrieval_stands_aside_once_every_query_term_has_been_read() -> None:
@@ -593,6 +683,64 @@ async def test_a_hedge_consults_the_model_even_at_fanout_one() -> None:
     assert len(trace.steps) == 2, "the hedge reads both, not just the lexical guess"
     assert trace.steps[1].ref == right
     assert trace.status is RunStatus.ANSWERED
+
+
+async def test_an_expansion_failure_degrades_to_the_hedge() -> None:
+    """The expansion is an enhancement — `expand_query=False` is a supported
+    config with exactly this behaviour — so one flaky call in it must not
+    abort a run that could still answer."""
+    index = index_of(_french_contract_json())
+    right = next(u for u in index.units if "Plafond" in u.title).ref
+    model = FakeChatModel(
+        [
+            RuntimeError("expansion call died"),
+            Selection(reason="la responsabilite est a l'article 7", ref=right),
+            Reading(sufficient=False, response="rien ici"),
+            Reading(sufficient=True, response="500 000 euros"),
+        ]
+    )
+
+    trace = await HybridStrategy(model, GATED).run(index, PARAPHRASE)
+
+    assert trace.status is RunStatus.ANSWERED
+    assert len(trace.steps) == 2
+
+
+async def test_an_empty_expansion_is_remembered_not_rebought() -> None:
+    """ "Once per run" must hold when the model returns no terms at all, or
+    every low-confidence round pays another call for the same dry answer."""
+    index = index_of(_french_contract_json())
+    model = FakeChatModel(
+        [
+            QueryTerms(terms=[]),
+            Selection(reason="essai", ref=index.units[1].ref),
+            Reading(sufficient=False, response="rien"),
+            Reading(sufficient=False, response="rien non plus"),
+            Reading(sufficient=False, response="toujours rien"),
+            "Rien de concluant.",
+        ]
+    )
+    config = HybridConfig(direct_char_threshold=0, fanout=1, max_steps=3)
+
+    await HybridStrategy(model, config).run(index, PARAPHRASE)
+
+    prompts = [m[-1].content for m in model.structured_calls]
+    assert sum("most likely to appear" in p for p in prompts) == 1
+
+
+async def test_a_hedge_without_room_for_the_model_does_not_claim_one() -> None:
+    """The trace is the audit record: when budget truncates the hedge to the
+    lexical guess alone, the step must not assert a consultation that never
+    happened."""
+    index = index_of(_french_contract_json())
+    model = FakeChatModel([Reading(sufficient=False, response="rien")])
+    config = HybridConfig(direct_char_threshold=0, fanout=1, max_steps=1, expand_query=False)
+
+    trace = await HybridStrategy(model, config).run(index, PARAPHRASE)
+
+    assert len(trace.steps) == 1
+    assert "low-confidence shortlist" in trace.steps[0].reason
+    assert "read alongside" not in trace.steps[0].reason
 
 
 async def test_a_hedge_still_shrinks_to_the_remaining_budget() -> None:

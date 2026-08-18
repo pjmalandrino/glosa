@@ -60,6 +60,23 @@ if settings.reasoning_enabled:
 
 That is the whole change. `api/reasoning.py` keeps its `ReasoningResultResponse`
 mapping, its 503 on `is_available`, and its 502 on `ReasoningParseError`.
+The `_build_chat_model` helper reads two settings section 3 adds for the
+OpenAI-compatible path: `openai_base_url` and `openai_api_key`.
+
+### What can escape `run()`
+
+Three exception classes cross the boundary, each typed and each replaceable
+with a host exception via a factory:
+
+| Failure | Default | Factory |
+| ------- | ------- | ------- |
+| backend cannot satisfy the schema (after constrained decoding + repair) | `parse_error_factory` — Studio's `ReasoningParseError`, mapped to 502 | `parse_error_factory=` |
+| backend unreachable / kept failing (`is_available` deliberately does no I/O, so "Ollama is down" surfaces here) | glosa's `BackendError` (carries `status_code` and `retryable`) | `backend_error_factory=` |
+| `document_json` is not a readable document | glosa's `DocumentParseError` | `document_error_factory=` |
+
+Anything else indicates a bug in glosa. Transient failures *during* a run that
+already produced steps do not raise at all: the run returns a partial trace
+with `converged=False` instead of discarding the steps.
 
 Two things that were needed before and are not any more:
 
@@ -91,7 +108,7 @@ GlosaReasoningRunner(
     config=HybridConfig(
         max_steps=6,  # reads before the loop gives up
         max_llm_calls=20,  # hard ceiling on round-trips
-        deadline_s=180.0,  # wall-clock ceiling; cancellation is honoured
+        deadline_s=180.0,  # wall-clock ceiling — in-flight calls are cancelled at the deadline
         outline_char_budget=6_000,  # document map size per prompt
         excerpt_char_budget=8_000,  # section text size per read
         direct_char_threshold=6_000,  # below this, read the whole document in one call
@@ -144,8 +161,8 @@ projection of it. This is what phase L2 exposes over SSE.
 
 ## 7. If you change the projection
 
-`glosa/studio/tree.py` mirrors `infra/docling_tree.py`. If Studio changes a
-collapse rule, a label mapping or the reading order, glosa must follow, and
+`glosa/infra/docling/tree.py` mirrors `infra/docling_tree.py`. If Studio changes
+a collapse rule, a label mapping or the reading order, glosa must follow, and
 `tests/contract/test_studio_tree_parity.py` plus
 `tests/contract/test_studio_section_scoping.py` are what should fail first.
 

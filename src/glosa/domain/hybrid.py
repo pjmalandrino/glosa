@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from glosa.domain.budget import Budget
-from glosa.domain.errors import BudgetExhausted
+from glosa.domain.errors import BudgetExhausted, ReasoningParseError
 from glosa.domain.rank import Shortlist
 from glosa.domain.reading import (
     Note,
@@ -51,12 +51,35 @@ from glosa.domain.reading import (
 from glosa.domain.values import RunStatus, Step, Trace
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Awaitable, Sequence
 
     from glosa.domain.index import DocIndex, Unit
     from glosa.ports.chat import ChatModel
 
 logger = logging.getLogger(__name__)
+
+NOTHING_FOUND = "No relevant content was found in this document."
+
+
+async def _within_deadline[T](budget: Budget, pending: Awaitable[T]) -> T:
+    """Run one awaitable under what is left of the wall-clock budget.
+
+    The deadline used to be checked only between rounds, so one hung backend
+    call could overshoot it by minutes. Bounding every call is what turns
+    `deadline_s` from a hint into a contract: at the deadline, in-flight reads
+    are cancelled and the run ends as `BUDGET_EXHAUSTED` with whatever it has.
+    """
+    remaining = budget.remaining_s
+    if remaining is None:
+        return await pending
+    try:
+        async with asyncio.timeout(max(remaining, 0.0)):
+            return await pending
+    except TimeoutError as exc:
+        raise BudgetExhausted(
+            f"deadline of {budget.deadline_s or 0:.0f}s reached mid-call"
+        ) from exc
+
 
 HEDGE_WIDTH = 2
 """Slots a hedged round needs: the lexical guess *and* the model's own pick.
@@ -135,14 +158,31 @@ class HybridStrategy:
             )
 
         if index.total_chars <= cfg.direct_char_threshold:
-            step, status = await read_whole_document(
-                self._model,
-                index=index,
-                query=query,
-                budget=budget,
-                excerpt_char_budget=cfg.excerpt_char_budget,
-                max_tokens=cfg.max_tokens,
-            )
+            try:
+                step, status = await _within_deadline(
+                    budget,
+                    read_whole_document(
+                        self._model,
+                        index=index,
+                        query=query,
+                        budget=budget,
+                        excerpt_char_budget=cfg.excerpt_char_budget,
+                        max_tokens=cfg.max_tokens,
+                    ),
+                )
+            except BudgetExhausted as exc:
+                # Same contract as the loop path: running out is an outcome,
+                # not a crash.
+                logger.info("run stopped early: %s", exc)
+                return build_trace(
+                    query=query,
+                    answer="",
+                    status=RunStatus.BUDGET_EXHAUSTED,
+                    steps=(),
+                    budget=budget,
+                    started=started,
+                    model_id=self._model.model_id,
+                )
             return build_trace(
                 query=query,
                 answer=step.response,
@@ -163,7 +203,7 @@ class HybridStrategy:
         notes: list[Note] = []
         visited: list[str] = []
         absent_votes = 0
-        expansion: tuple[str, ...] = ()
+        expansion: tuple[str, ...] | None = None
         status = RunStatus.INSUFFICIENT_EVIDENCE
 
         try:
@@ -180,7 +220,23 @@ class HybridStrategy:
                     status = self._stalled_status(unread)
                     break
 
-                results = await self._read_batch(index, query, picks, notes, budget)
+                try:
+                    results = await self._read_batch(index, query, picks, notes, budget)
+                except (BudgetExhausted, ReasoningParseError):
+                    raise
+                except Exception as exc:
+                    if not steps:
+                        raise
+                    # A backend that just served N rounds failing on round
+                    # N+1 does not retroactively invalidate them. The partial
+                    # trace is the product; discarding it here was the bug.
+                    logger.warning(
+                        "round failed after %d step(s); keeping the partial trace: %s",
+                        len(steps),
+                        exc,
+                    )
+                    status = RunStatus.BUDGET_EXHAUSTED
+                    break
                 if not results:
                     status = RunStatus.BUDGET_EXHAUSTED
                     break
@@ -238,7 +294,15 @@ class HybridStrategy:
             logger.info("run stopped early: %s", exc)
             status = RunStatus.BUDGET_EXHAUSTED
 
-        answer = await compose(self._model, query=query, notes=notes, budget=budget)
+        try:
+            answer = await _within_deadline(
+                budget, compose(self._model, query=query, notes=notes, budget=budget)
+            )
+        except Exception as exc:
+            # Composing is a nicety; the notes are the substance. A failure
+            # here must not discard the steps already gathered.
+            logger.warning("composing failed; falling back to the last note: %s", exc)
+            answer = notes[-1].finding if notes else NOTHING_FOUND
         return build_trace(
             query=query,
             answer=answer,
@@ -264,8 +328,8 @@ class HybridStrategy:
         visited: Sequence[str],
         notes: Sequence[Note],
         budget: Budget,
-        expansion: tuple[str, ...],
-    ) -> tuple[list[_Pick], tuple[str, ...]]:
+        expansion: tuple[str, ...] | None,
+    ) -> tuple[list[_Pick], tuple[str, ...] | None]:
         """The units to read this round, and the expansion to carry forward.
 
         An escalation, cheapest first:
@@ -289,7 +353,7 @@ class HybridStrategy:
             return [], expansion
 
         probe = self._probe(index, query, notes, visited)
-        shortlist = self._rank(index, probe, visited, expansion)
+        shortlist = self._rank(index, probe, visited, expansion or ())
 
         if not self._trusted(shortlist):
             expansion = await self._expanded(index, query, expansion, budget)
@@ -343,20 +407,37 @@ class HybridStrategy:
         self,
         index: DocIndex,
         query: str,
-        expansion: tuple[str, ...],
+        expansion: tuple[str, ...] | None,
         budget: Budget,
-    ) -> tuple[str, ...]:
-        """Ask the model for retrieval vocabulary — once per run, on demand."""
+    ) -> tuple[str, ...] | None:
+        """Ask the model for retrieval vocabulary — once per run, on demand.
+
+        `None` means "not asked yet"; an empty tuple means "asked, nothing
+        usable came back" and is remembered, so a dry answer is never bought
+        again on the next low-confidence round. A failed call degrades to the
+        hedge instead of aborting the run: the expansion is an enhancement,
+        and `expand_query=False` is a supported configuration with exactly
+        that behaviour.
+        """
         cfg = self._config
-        if expansion or not cfg.expand_query or budget.calls_left < 2:
+        if expansion is not None or not cfg.expand_query or budget.calls_left < 2:
             return expansion
-        terms = await expand_query(
-            self._model,
-            query=query,
-            titles=[unit.title for unit in index.units],
-            budget=budget,
-            max_tokens=cfg.max_tokens,
-        )
+        try:
+            terms = await _within_deadline(
+                budget,
+                expand_query(
+                    self._model,
+                    query=query,
+                    titles=[unit.title for unit in index.units],
+                    budget=budget,
+                    max_tokens=cfg.max_tokens,
+                ),
+            )
+        except BudgetExhausted:
+            raise
+        except Exception as exc:
+            logger.warning("query expansion failed; hedging without it: %s", exc)
+            return ()
         if terms:
             logger.info("expanded %r → %s", query[:60], list(terms))
         return terms
@@ -378,36 +459,50 @@ class HybridStrategy:
         """
         cfg = self._config
         picks: list[_Pick] = []
+        base = ""
         top = shortlist.top
         if top is not None:
-            picks.append(
-                _Pick(
-                    top.unit,
-                    f"{top.rationale}; low-confidence shortlist "
-                    f"(coverage {shortlist.coverage:.0%}, margin {shortlist.margin:.2f}) "
-                    f"— the model's own pick is read alongside",
-                )
+            base = (
+                f"{top.rationale}; low-confidence shortlist "
+                f"(coverage {shortlist.coverage:.0%}, margin {shortlist.margin:.2f})"
             )
+            picks.append(_Pick(top.unit, base))
 
         chosen = {pick.unit.ref for pick in picks}
         unread = [u for u in index.units if u.ref not in visited and u.ref not in chosen]
         if not unread or room <= len(picks) or budget.calls_left < len(picks) + 3:
             return picks[:room]
 
-        selection, fallback = await select_unit(
-            self._model,
-            query=query,
-            index=index,
-            candidates=unread,
-            visited=visited,
-            notes=notes,
-            budget=budget,
-            outline_char_budget=cfg.outline_char_budget,
-            max_tokens=cfg.max_tokens,
-        )
+        try:
+            selection, fallback = await _within_deadline(
+                budget,
+                select_unit(
+                    self._model,
+                    query=query,
+                    index=index,
+                    candidates=unread,
+                    # The round's own picks count as visited for the descent,
+                    # or it can re-offer the lexical top and read it twice.
+                    visited=[*visited, *chosen],
+                    notes=notes,
+                    budget=budget,
+                    outline_char_budget=cfg.outline_char_budget,
+                    max_tokens=cfg.max_tokens,
+                ),
+            )
+        except (BudgetExhausted, ReasoningParseError):
+            raise
+        except Exception as exc:
+            logger.warning("selection failed; hedging with the lexical pick alone: %s", exc)
+            return picks[:room]
+
         unit = index.get(selection.ref)
-        if unit is not None:
+        if unit is not None and unit.ref not in chosen:
             picks.append(_Pick(unit, selection.reason, fallback=fallback))
+            if base:
+                # Only now is the claim true. A hedge truncated to the lexical
+                # guess must not record a consultation that never happened.
+                picks[0] = _Pick(picks[0].unit, f"{base} — the model's own pick is read alongside")
         return picks[:room]
 
     def _probe(
@@ -429,7 +524,9 @@ class HybridStrategy:
           re-propose the same sections. But the reader's own words are new
           vocabulary ("look for the invoicing terms"), so search *those alone*.
         """
-        gap = " ".join(note.finding for note in notes[-self._config.gap_notes :]).strip()
+        # Guarded because `notes[-0:]` is the whole list, not none of it.
+        recent = notes[-self._config.gap_notes :] if self._config.gap_notes > 0 else []
+        gap = " ".join(note.finding for note in recent).strip()
         if not visited:
             return query
         if index.ranker.body.missing_terms(query, visited):
@@ -459,6 +556,13 @@ class HybridStrategy:
         whole point of showing one.
         """
         cfg = self._config
+        # The picks were sized when the round started; selection and expansion
+        # calls since then may have spent budget. Shrinking here beats raising
+        # before a single read has happened.
+        batch = list(picks)[: min(len(picks), budget.steps_left, budget.calls_left)]
+        if not batch:
+            return []
+        picks = batch
         for _ in picks:
             budget.spend_step()
             budget.spend_call()
@@ -477,7 +581,7 @@ class HybridStrategy:
             )
             for pick in picks
         ]
-        outcomes = await asyncio.gather(*tasks, return_exceptions=True)
+        outcomes = await _within_deadline(budget, asyncio.gather(*tasks, return_exceptions=True))
 
         results: list[tuple[_Pick, Reading]] = []
         failures: list[BaseException] = []

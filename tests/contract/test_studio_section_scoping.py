@@ -25,7 +25,14 @@ from glosa.infra.docling.tree import (
     iter_items,
     parent_ref,
 )
-from tests.conftest import build_flat, build_nested, build_picture, build_preamble, index_of
+from tests.conftest import (
+    build_flat,
+    build_nested,
+    build_nested_trailing,
+    build_picture,
+    build_preamble,
+    index_of,
+)
 
 SECTION_LABEL = "SectionHeader"
 
@@ -163,6 +170,13 @@ def test_scoping_matches_the_frontend_on_a_nested_document() -> None:
 
 def test_scoping_matches_the_frontend_with_a_preamble() -> None:
     _assert_scoping_matches(build_preamble().model_dump_json())
+
+
+def test_scoping_matches_the_frontend_when_content_trails_a_subsection() -> None:
+    """The shape where NEXT-chain-only scoping and the frontend disagree:
+    a paragraph parented to the `h1` but sitting after the `h2` subtree in
+    reading order belongs to the `h1` — the explicit-PARENT_OF exemption."""
+    _assert_scoping_matches(build_nested_trailing().model_dump_json())
 
 
 def test_scoping_matches_the_frontend_with_a_figure() -> None:

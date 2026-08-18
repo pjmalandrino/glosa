@@ -40,7 +40,7 @@ from glosa.adapters.legacy import (
     ResultFactory,
     to_legacy,
 )
-from glosa.domain.errors import ReasoningParseError
+from glosa.domain.errors import BackendError, DocumentParseError, ReasoningParseError
 from glosa.domain.hybrid import HybridConfig, HybridStrategy
 from glosa.domain.index import DocIndex
 from glosa.infra.docling.projection import DoclingProjector
@@ -48,7 +48,7 @@ from glosa.infra.docling.projection import DoclingProjector
 if TYPE_CHECKING:
     from glosa.domain.values import Trace
     from glosa.ports.chat import ChatModel
-    from glosa.ports.document import DocumentProjector
+    from glosa.ports.document import DocumentProjector, TreeReader
 
 DEFAULT_CACHE_SIZE = 8
 
@@ -57,6 +57,12 @@ class ParseErrorFactory(Protocol):
     """Anything constructible from a model id and a reason."""
 
     def __call__(self, *, model_id: str, reason: str) -> Exception: ...
+
+
+class ErrorFactory(Protocol):
+    """Anything constructible from a reason string."""
+
+    def __call__(self, *, reason: str) -> Exception: ...
 
 
 class GlosaReasoningRunner:
@@ -68,6 +74,9 @@ class GlosaReasoningRunner:
         projector: How to turn a stored payload into a projection. Defaults to
             the bundled Docling projector; pass one built with the host's own
             tree reader so the collapse rules have a single implementation.
+        tree_reader: Shorthand for `projector=DoclingProjector(tree_reader=…)`,
+            so the host can hand over its tree reader without naming the
+            projector. Mutually exclusive with `projector`.
         config: Loop tuning. Defaults suit a 30-page report on a local 8B model.
             Retrieval-first with a parallel frontier.
         cache_size: How many parsed documents to keep indexed. Studio asks
@@ -78,6 +87,13 @@ class GlosaReasoningRunner:
         result_factory / iteration_factory: Host types to build the reply with.
         parse_error_factory: Host exception raised when the backend cannot
             produce a parseable structured reply.
+        backend_error_factory: Host exception raised when the backend is
+            unreachable or keeps failing. Left unset, glosa's own
+            `BackendError` propagates — a host that maps exceptions to status
+            codes should pass its own type (or catch `glosa.BackendError`).
+        document_error_factory: Same, for a `document_json` that is not a
+            readable document. Left unset, `glosa.DocumentParseError`
+            propagates.
         annotate_status: Prefix non-answered runs with a one-line marker.
     """
 
@@ -86,16 +102,21 @@ class GlosaReasoningRunner:
         model: ChatModel,
         *,
         projector: DocumentProjector | None = None,
+        tree_reader: TreeReader | None = None,
         config: HybridConfig | None = None,
         cache_size: int = DEFAULT_CACHE_SIZE,
         include_furniture: bool = False,
         result_factory: ResultFactory = LegacyResult,
         iteration_factory: IterationFactory = LegacyIteration,
         parse_error_factory: ParseErrorFactory = ReasoningParseError,
+        backend_error_factory: ErrorFactory | None = None,
+        document_error_factory: ErrorFactory | None = None,
         annotate_status: bool = True,
     ) -> None:
+        if projector is not None and tree_reader is not None:
+            raise ValueError("pass either projector= or tree_reader=, not both")
         self._model = model
-        self._projector: DocumentProjector = projector or DoclingProjector()
+        self._projector: DocumentProjector = projector or DoclingProjector(tree_reader=tree_reader)
         self._config = config or HybridConfig()
         self._cache: OrderedDict[str, DocIndex] = OrderedDict()
         self._cache_size = max(1, cache_size)
@@ -103,6 +124,8 @@ class GlosaReasoningRunner:
         self._result_factory = result_factory
         self._iteration_factory = iteration_factory
         self._parse_error_factory = parse_error_factory
+        self._backend_error_factory = backend_error_factory
+        self._document_error_factory = document_error_factory
         self._annotate_status = annotate_status
 
     # -- ReasoningRunner ------------------------------------------------------
@@ -142,14 +165,29 @@ class GlosaReasoningRunner:
         query: str,
         model_id: str | None = None,
     ) -> Trace:
-        """Run the loop and return the full native trace, provenance included."""
+        """Run the loop and return the full native trace, provenance included.
+
+        Failures cross this boundary typed: `DocumentParseError` for a payload
+        that is not a document, `BackendError` for a backend that stayed
+        unreachable, the host's parse error for a backend that cannot satisfy
+        a schema — each replaceable with a host exception via the factories.
+        """
         model = self._model if model_id is None else self._model.for_model(model_id)
-        index = self._index_for(document_json)
+        try:
+            index = self._index_for(document_json)
+        except DocumentParseError as exc:
+            if self._document_error_factory is None:
+                raise
+            raise self._document_error_factory(reason=str(exc)) from exc
         strategy = HybridStrategy(model, self._config)
         try:
             return await strategy.run(index, query)
         except ReasoningParseError as exc:
             raise self._parse_error_factory(model_id=exc.model_id, reason=exc.reason) from exc
+        except BackendError as exc:
+            if self._backend_error_factory is None:
+                raise
+            raise self._backend_error_factory(reason=str(exc)) from exc
 
     async def health(self) -> bool:
         """Probe the backend. Never raises."""

@@ -123,6 +123,35 @@ def test_a_section_that_fits_is_untouched_by_focus() -> None:
     assert index.excerpt(ref).text == index.excerpt(ref, focus="anything at all").text
 
 
+def test_an_oversized_matching_passage_is_truncated_in_not_dropped() -> None:
+    """The worst case used to be the motivating one: the answer inside a
+    single paragraph larger than the whole budget. Skipping it while
+    zero-score filler filled the excerpt read as diligence and was blindness."""
+    doc = DoclingDocument(name="appendix")
+    pages(doc, 1)
+    heading = doc.add_heading(text="Appendix C", level=1, prov=prov(1, 740))
+    doc.add_text(
+        label=DocItemLabel.TEXT,
+        text="The indemnity cap is set at 500,000 EUR. "
+        + "Further conditions apply to that cap under schedule 4. " * 60,
+        parent=heading,
+        prov=prov(1, 700),
+    )
+    for i in range(3):
+        doc.add_text(
+            label=DocItemLabel.TEXT,
+            text=f"Unrelated administrative paragraph number {i}. " * 8,
+            parent=heading,
+            prov=prov(1, 650 - i),
+        )
+    index = index_of(doc.model_dump_json())
+
+    excerpt = index.excerpt(index.units[0].ref, char_budget=600, focus="what is the indemnity cap")
+
+    assert "500,000 EUR" in excerpt.text
+    assert excerpt.truncated is True
+
+
 def test_focus_that_matches_nothing_falls_back_to_head_first() -> None:
     index = index_of(_long_section_json())
     ref = index.units[0].ref

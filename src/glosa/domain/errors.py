@@ -40,4 +40,17 @@ class BudgetExhausted(GlosaError):
 
 
 class BackendError(GlosaError):
-    """The LLM backend was unreachable or returned an unusable HTTP response."""
+    """The LLM backend was unreachable or returned an unusable HTTP response.
+
+    `status_code` is the HTTP status when there was one; `retryable` says
+    whether the failure was transient (a 503, a dropped connection) or
+    deterministic (a 401, a malformed body) — so a host can tell back-pressure
+    from misconfiguration without parsing the message.
+    """
+
+    def __init__(
+        self, message: str, *, status_code: int | None = None, retryable: bool = False
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.retryable = retryable

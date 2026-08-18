@@ -546,7 +546,16 @@ check without the caveat the design states.
 
 ## 10. Roadmap
 
-### P0 — Correctness on the shipped promises (days)
+### P0 — Correctness on the shipped promises (days) — ✅ shipped
+
+> Every item below landed on this branch with a regression test:
+> B1–B7 and B10–B19 fixed, plus B8's silent-lead-destruction half (a lead
+> whose tokenization is empty is now kept; the Latin-only prior itself stays
+> in the backlog with B9 and B20, as planned). Also shipped: `py.typed`, the
+> CLI flag split, the adapter error factories, and the `tree_reader` kwarg
+> that makes INTEGRATION.md's wire-up real. The hedge can no longer read the
+> same unit twice in one round (B12, taken along for free). 259 tests,
+> `mypy --strict` and `ruff` clean.
 
 1. **B1** scoping: explicit-parent exemption + discriminating fixture.
 2. **B2** packing: truncate the top-ranked oversized element; honest marker.

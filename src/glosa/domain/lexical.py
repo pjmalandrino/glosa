@@ -31,14 +31,38 @@ B = 0.75
 MIN_TOKEN_LEN = 2
 
 
+_CHAR_FOLD = str.maketrans(
+    {
+        # NFKD decomposes accents but not these: \u0153/\u00e6 have no
+        # compatibility decomposition, and the curly apostrophe every word
+        # processor emits is a different character from the ASCII one a model
+        # types back.
+        "\u0153": "oe",  # latin small ligature oe
+        "\u00e6": "ae",  # latin small ligature ae
+        "\u2019": "'",  # right single quotation mark - the French apostrophe
+        "\u2018": "'",  # left single quotation mark
+        "\u02bc": "'",  # modifier letter apostrophe
+        "\u201c": '"',
+        "\u201d": '"',
+        "\u2013": "-",  # en dash
+        "\u2014": "-",  # em dash
+        "\u2212": "-",  # minus sign
+        "\u00a0": " ",  # no-break spaces group French thousands: 500 000
+        "\u202f": " ",  # narrow no-break space
+    }
+)
+
+
 def normalize(text: str) -> str:
-    """Casefold and strip diacritics.
+    """Casefold, fold apostrophe/ligature variants, and strip diacritics.
 
     Documents and questions rarely agree on accents — "pénalité" in the
     contract, "penalite" in the question typed in a hurry. Stripping them costs
-    nothing and removes a whole class of misses on French corpora.
+    nothing and removes a whole class of misses on French corpora. The same
+    goes for "d'œuvre" against "d'oeuvre": the grounding check and the
+    tokenizer must see them as the same text.
     """
-    decomposed = unicodedata.normalize("NFKD", text.casefold())
+    decomposed = unicodedata.normalize("NFKD", text.casefold().translate(_CHAR_FOLD))
     return "".join(ch for ch in decomposed if not unicodedata.combining(ch))
 
 
@@ -60,10 +84,14 @@ def fold(token: str) -> str:
     if len(token) <= 3 or _HAS_DIGIT.search(token):
         return token
 
-    if token.endswith("aux"):
+    if token.endswith("eaux"):
+        # -eau takes a plural -x: bureaux → bureau. The -aux rule below would
+        # produce "bureal", stranding the singular in a different bucket.
+        token = token[:-1]
+    elif token.endswith("aux"):
         # Before the generic -x rule, which would leave "travau".
         token = token[:-3] + "al"
-    elif token.endswith("ies"):
+    elif token.endswith("ies") and len(token) > 4:
         token = token[:-3] + "y"
     elif token.endswith(("ches", "shes", "sses", "xes", "zes")):
         token = token[:-2]
@@ -72,6 +100,11 @@ def fold(token: str) -> str:
     elif token.endswith("s") or (token.endswith("x") and len(token) > 4):
         token = token[:-1]
 
+    # French -ie meets the English -ies rule at the same bucket: "partie" and
+    # "parties" (→ "party") must agree, or the folder splits exactly the
+    # singular/plural pairs it exists to join.
+    if len(token) > 3 and token.endswith("ie"):
+        token = token[:-2] + "y"
     # French -ail/-aux collapse onto -al so travail/travaux and
     # journal/journaux meet at the same stem.
     if token.endswith("ail"):

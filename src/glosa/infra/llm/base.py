@@ -114,7 +114,9 @@ class HTTPChatModel(ABC):
     async def health(self) -> bool:
         try:
             response = await self._http.get(self._health_path(), headers=self._headers())
-        except httpx.HTTPError:
+        except Exception:
+            # "Must not raise" is the port's contract; a closed shared client
+            # (RuntimeError) is as much "down" as a refused connection.
             return False
         return response.status_code < 400
 
@@ -144,25 +146,51 @@ class HTTPChatModel(ABC):
         schema: type[BaseModel] | None,
         max_tokens: int | None,
     ) -> str:
+        """POST once, retrying only what can plausibly succeed on a retry.
+
+        A 401, a 404 or a schema-rejecting 400 is deterministic: re-sending the
+        identical request delays the real diagnosis by the whole backoff
+        schedule, so those raise immediately. Only transport failures and the
+        transient statuses in `_RETRYABLE_STATUS` consume retries.
+        """
         payload = self._build_payload(messages, schema=schema, max_tokens=max_tokens)
         path = self._chat_path()
-        last: Exception | None = None
+        last: BackendError | None = None
 
         for attempt in range(self._max_retries + 1):
             try:
                 response = await self._http.post(path, json=payload, headers=self._headers())
-                if response.status_code in _RETRYABLE_STATUS:
-                    raise BackendError(f"{response.status_code} from {path}: {response.text[:300]}")
+            except httpx.HTTPError as exc:
+                last = BackendError(f"transport failure calling {path}: {exc}", retryable=True)
+            else:
                 if response.status_code >= 400:
-                    raise BackendError(f"{response.status_code} from {path}: {response.text[:300]}")
-                return self._extract_text(response.json())
-            except (httpx.HTTPError, BackendError) as exc:
-                last = exc
-                if attempt == self._max_retries:
-                    break
+                    error = BackendError(
+                        f"{response.status_code} from {path}: {response.text[:300]}",
+                        status_code=response.status_code,
+                        retryable=response.status_code in _RETRYABLE_STATUS,
+                    )
+                    if not error.retryable:
+                        raise error
+                    last = error
+                else:
+                    try:
+                        body = response.json()
+                    except ValueError as exc:
+                        # A 200 with a non-JSON body (a proxy error page) must
+                        # stay inside the typed hierarchy.
+                        raise BackendError(
+                            f"non-JSON body from {path}: {exc}",
+                            status_code=response.status_code,
+                        ) from exc
+                    return self._extract_text(body)
+            if attempt < self._max_retries:
                 await asyncio.sleep(0.5 * 2**attempt)
 
-        raise BackendError(f"{self.__class__.__name__} failed after retries: {last}") from last
+        raise BackendError(
+            f"{self.__class__.__name__} failed after retries: {last}",
+            status_code=last.status_code if last is not None else None,
+            retryable=True,
+        ) from last
 
     # -- backend specifics ----------------------------------------------------
 

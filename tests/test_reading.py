@@ -343,6 +343,16 @@ def test_retyped_accents_and_line_breaks_do_not_count_as_invention() -> None:
     assert quote_is_grounded("la penalite est de 2 % par semaine, cumulee", source)
 
 
+def test_curly_apostrophes_and_ligatures_do_not_count_as_invention() -> None:
+    """Word processors write curly apostrophes and œ; models type back ' and
+    oe. Flagging that as an invented quote poisons the very labels the flag
+    exists to produce."""
+    source = "Le plafond d’indemnisation s’élève à 500 000 € pour l’œuvre."  # noqa: RUF001
+    quote = "Le plafond d'indemnisation s'eleve a 500 000 € pour l'oeuvre."
+
+    assert quote_is_grounded(quote, source)
+
+
 def test_a_quote_from_a_different_section_is_not_grounded() -> None:
     assert not quote_is_grounded("Invoices are payable within 30 days.", EXCERPT)
 

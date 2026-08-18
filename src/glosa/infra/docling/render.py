@@ -63,39 +63,50 @@ def render_picture(item: dict[str, Any], *, by_ref: dict[str, dict[str, Any]]) -
     return f"[figure] {body}" if body else "[figure]"
 
 
+def _cell_int(value: Any, default: int = 0) -> int:
+    try:
+        return default if value is None else int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def render_table(item: dict[str, Any], *, by_ref: dict[str, dict[str, Any]]) -> str:
     """Render a Docling table as HTML from its cell offsets.
 
     Cells carry `start/end_row_offset_idx` and `start/end_col_offset_idx`, so
     the grid is reconstructed exactly — including spans — without needing
-    docling-core at runtime.
+    docling-core at runtime. Offsets are coerced defensively: a corrupt cell
+    degrades the table, not the run.
     """
-    data = item.get("data") or {}
-    cells = data.get("table_cells") or []
+    data = item.get("data")
+    if not isinstance(data, dict):
+        data = {}
+    raw_cells = data.get("table_cells")
+    cells = [c for c in raw_cells if isinstance(c, dict)] if isinstance(raw_cells, list) else []
     caption = " ".join(_referenced_texts(item.get("captions"), by_ref))
 
     if not cells:
         return f"[table] {caption}".strip()
 
-    num_rows = int(data.get("num_rows") or 0)
-    num_cols = int(data.get("num_cols") or 0)
+    num_rows = _cell_int(data.get("num_rows"))
+    num_cols = _cell_int(data.get("num_cols"))
     if num_rows <= 0 or num_cols <= 0:
         for cell in cells:
-            num_rows = max(num_rows, int(cell.get("end_row_offset_idx") or 0))
-            num_cols = max(num_cols, int(cell.get("end_col_offset_idx") or 0))
+            num_rows = max(num_rows, _cell_int(cell.get("end_row_offset_idx")))
+            num_cols = max(num_cols, _cell_int(cell.get("end_col_offset_idx")))
     if num_rows * num_cols > MAX_TABLE_CELLS:
         return _render_table_rows_only(cells, caption)
 
     placed: dict[tuple[int, int], dict[str, Any]] = {}
     covered: set[tuple[int, int]] = set()
     for cell in cells:
-        row = int(cell.get("start_row_offset_idx") or 0)
-        col = int(cell.get("start_col_offset_idx") or 0)
+        row = _cell_int(cell.get("start_row_offset_idx"))
+        col = _cell_int(cell.get("start_col_offset_idx"))
         if (row, col) in placed:
             continue
         placed[(row, col)] = cell
-        row_span = max(1, int(cell.get("end_row_offset_idx") or row + 1) - row)
-        col_span = max(1, int(cell.get("end_col_offset_idx") or col + 1) - col)
+        row_span = max(1, _cell_int(cell.get("end_row_offset_idx"), row + 1) - row)
+        col_span = max(1, _cell_int(cell.get("end_col_offset_idx"), col + 1) - col)
         for r in range(row, row + row_span):
             for c in range(col, col + col_span):
                 if (r, c) != (row, col):
@@ -109,11 +120,11 @@ def render_table(item: dict[str, Any], *, by_ref: dict[str, dict[str, Any]]) -> 
         for col in range(num_cols):
             if (row, col) in covered:
                 continue
-            cell = placed.get((row, col))
-            if cell is None:
+            placed_cell = placed.get((row, col))
+            if placed_cell is None:
                 lines.append("<td></td>")
                 continue
-            lines.append(_render_cell(cell, row, col))
+            lines.append(_render_cell(placed_cell, row, col))
         lines.append("</tr>")
     lines.append("</table>")
     return "".join(lines)
@@ -121,8 +132,8 @@ def render_table(item: dict[str, Any], *, by_ref: dict[str, dict[str, Any]]) -> 
 
 def _render_cell(cell: dict[str, Any], row: int, col: int) -> str:
     tag = "th" if cell.get("column_header") or cell.get("row_header") else "td"
-    row_span = max(1, int(cell.get("end_row_offset_idx") or row + 1) - row)
-    col_span = max(1, int(cell.get("end_col_offset_idx") or col + 1) - col)
+    row_span = max(1, _cell_int(cell.get("end_row_offset_idx"), row + 1) - row)
+    col_span = max(1, _cell_int(cell.get("end_col_offset_idx"), col + 1) - col)
     attrs = ""
     if row_span > 1:
         attrs += f' rowspan="{row_span}"'

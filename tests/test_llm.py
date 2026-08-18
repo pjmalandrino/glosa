@@ -158,6 +158,59 @@ async def test_persistent_failure_surfaces_as_backend_error() -> None:
         await _ollama(handler).complete([user("q")])
 
 
+@pytest.mark.parametrize("status", [400, 401, 404, 422])
+async def test_a_deterministic_4xx_is_raised_immediately_not_retried(status: int) -> None:
+    """Re-sending an identical request after a bad key or a missing model
+    delays the real diagnosis by the whole backoff schedule."""
+    attempts = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        return httpx.Response(status, text="nope")
+
+    with pytest.raises(BackendError) as excinfo:
+        await _ollama(handler).complete([user("q")])
+
+    assert attempts["n"] == 1
+    assert excinfo.value.status_code == status
+    assert excinfo.value.retryable is False
+
+
+async def test_a_429_is_still_retried() -> None:
+    attempts = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            return httpx.Response(429, text="slow down")
+        return _ollama_reply('{"ok": true, "text": "after backoff"}')
+
+    result = await _ollama(handler).structured([user("q")], schema=Answer)
+    assert result.text == "after backoff"
+    assert attempts["n"] == 2
+
+
+async def test_a_200_with_a_non_json_body_is_a_typed_error() -> None:
+    """A misconfigured reverse proxy answers 200 with an HTML page; that must
+    stay inside the typed hierarchy, not escape as a raw JSONDecodeError."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="<html>proxy error</html>")
+
+    with pytest.raises(BackendError):
+        await _ollama(handler).complete([user("q")])
+
+
+async def test_health_never_raises_after_the_owner_closed_the_transport() -> None:
+    """The port says "must not raise"; a twin probing a closed shared client
+    is as much "down" as a refused connection."""
+    base = OllamaChatModel(model_id="granite3.3:8b")
+    twin = base.for_model("other:7b")
+    await base.aclose()
+
+    assert await twin.health() is False
+
+
 async def test_health_is_false_when_the_host_is_down() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("refused")

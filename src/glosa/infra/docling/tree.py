@@ -106,10 +106,19 @@ def parent_ref(item: dict[str, Any]) -> str | None:
 
 
 def iter_items(doc_data: dict[str, Any]) -> Iterator[tuple[str, dict[str, Any]]]:
-    """Yield `(source_list_key, item)` for every item in texts/tables/pictures/groups."""
+    """Yield `(source_list_key, item)` for every item in texts/tables/pictures/groups.
+
+    Anything that is not a list of dicts is skipped rather than crashed on:
+    the payload is untrusted storage, and a corrupt entry must surface as a
+    degraded projection or a `DocumentParseError`, never a raw `AttributeError`.
+    """
     for key in ITEM_LISTS:
-        for item in doc_data.get(key, []) or []:
-            yield key, item
+        items = doc_data.get(key)
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if isinstance(item, dict):
+                yield key, item
 
 
 def index_by_ref(doc_data: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -121,21 +130,46 @@ def index_by_ref(doc_data: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return by_ref
 
 
+def _safe_float(value: Any) -> float:
+    try:
+        return 0.0 if value is None else float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _safe_int(value: Any) -> int | None:
+    try:
+        return None if value is None else int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def iter_provs(item: dict[str, Any]) -> list[dict[str, Any]]:
-    """Flatten `prov[]` into Studio's row shape, preserving order."""
+    """Flatten `prov[]` into Studio's row shape, preserving order.
+
+    Coordinates and spans are coerced defensively: a prov row with a garbage
+    bbox loses its location, not the whole document.
+    """
+    provs = item.get("prov")
+    if not isinstance(provs, list):
+        return []
     rows: list[dict[str, Any]] = []
-    for idx, prov in enumerate(item.get("prov") or []):
+    for idx, prov in enumerate(provs):
+        if not isinstance(prov, dict):
+            continue
         bbox = prov.get("bbox")
         left = top = right = bottom = 0.0
         if isinstance(bbox, dict):
-            left = float(bbox.get("l", 0.0) or 0.0)
-            top = float(bbox.get("t", 0.0) or 0.0)
-            right = float(bbox.get("r", 0.0) or 0.0)
-            bottom = float(bbox.get("b", 0.0) or 0.0)
+            left = _safe_float(bbox.get("l"))
+            top = _safe_float(bbox.get("t"))
+            right = _safe_float(bbox.get("r"))
+            bottom = _safe_float(bbox.get("b"))
         elif isinstance(bbox, list | tuple) and len(bbox) >= 4:
-            left, top, right, bottom = (float(x) for x in bbox[:4])
+            left, top, right, bottom = (_safe_float(x) for x in bbox[:4])
         coord_origin = (bbox.get("coord_origin") if isinstance(bbox, dict) else None) or "TOPLEFT"
-        charspan = prov.get("charspan") or []
+        charspan = prov.get("charspan")
+        if not isinstance(charspan, list | tuple):
+            charspan = ()
         rows.append(
             {
                 "order": idx,
@@ -145,8 +179,8 @@ def iter_provs(item: dict[str, Any]) -> list[dict[str, Any]]:
                 "bbox_r": right,
                 "bbox_b": bottom,
                 "coord_origin": coord_origin,
-                "charspan_start": int(charspan[0]) if len(charspan) >= 1 else None,
-                "charspan_end": int(charspan[1]) if len(charspan) >= 2 else None,
+                "charspan_start": _safe_int(charspan[0]) if len(charspan) >= 1 else None,
+                "charspan_end": _safe_int(charspan[1]) if len(charspan) >= 2 else None,
             }
         )
     return rows
@@ -154,34 +188,49 @@ def iter_provs(item: dict[str, Any]) -> list[dict[str, Any]]:
 
 def iter_pages(doc_data: dict[str, Any]) -> Iterator[dict[str, Any]]:
     """Yield `{page_no, width, height}` for each page in the `pages` map."""
-    for page_no_str, page_obj in (doc_data.get("pages") or {}).items():
+    pages = doc_data.get("pages")
+    if not isinstance(pages, dict):
+        return
+    for page_no_str, page_obj in pages.items():
         try:
             page_no = int(page_no_str)
         except (TypeError, ValueError):
             continue
-        size = (page_obj or {}).get("size") or {}
+        size = page_obj.get("size") if isinstance(page_obj, dict) else None
+        if not isinstance(size, dict):
+            size = {}
         yield {"page_no": page_no, "width": size.get("width"), "height": size.get("height")}
 
 
 def dfs_order(doc_data: dict[str, Any], skip_refs: set[str] | None = None) -> list[str]:
-    """`self_ref`s in reading order — the NEXT chain the graph draws."""
+    """`self_ref`s in reading order — the NEXT chain the graph draws.
+
+    Each ref is visited once: a ref listed under two parents appears at its
+    first position only, and a cycle in the `children` graph terminates
+    instead of recursing forever.
+    """
     skip = skip_refs or set()
     by_ref = index_by_ref(doc_data)
     order: list[str] = []
+    seen: set[str] = set()
 
-    def walk(children: list[dict[str, Any]] | None) -> None:
-        if not children:
+    def walk(children: Any) -> None:
+        if not isinstance(children, list):
             return
         for child in children:
-            ref = child_ref(child)
-            if not ref or ref in skip:
+            if not isinstance(child, dict):
                 continue
+            ref = child_ref(child)
+            if not ref or ref in skip or ref in seen:
+                continue
+            seen.add(ref)
             order.append(ref)
             item = by_ref.get(ref)
             if item and not is_inline_group(item):
                 walk(item.get("children"))
 
-    walk((doc_data.get("body") or {}).get("children"))
+    body = doc_data.get("body")
+    walk(body.get("children") if isinstance(body, dict) else None)
     return order
 
 
@@ -215,8 +264,11 @@ def _collect_descendants(
         item = by_ref.get(ref)
         if item is None:
             return
-        for child in item.get("children") or []:
-            ref_ = child_ref(child)
+        children = item.get("children")
+        if not isinstance(children, list):
+            return
+        for child in children:
+            ref_ = child_ref(child) if isinstance(child, dict) else None
             if not ref_ or ref_ in skip_refs:
                 continue
             skip_refs.add(ref_)
@@ -235,8 +287,11 @@ def _collect_inline_descendants(
         item = by_ref.get(ref)
         if item is None:
             return
-        for child in item.get("children") or []:
-            ref_ = child_ref(child)
+        children = item.get("children")
+        if not isinstance(children, list):
+            return
+        for child in children:
+            ref_ = child_ref(child) if isinstance(child, dict) else None
             if not ref_ or ref_ in skip_refs:
                 continue
             skip_refs.add(ref_)

@@ -10,7 +10,7 @@ from glosa.domain.index import DocIndex
 from glosa.domain.values import Element, UnitKind
 from glosa.infra.docling.projection import node_id_for, page_node_id
 from glosa.ports.document import DocumentProjection
-from tests.conftest import FakeProjection, index_of, pages, prov
+from tests.conftest import FakeProjection, build_nested_trailing, index_of, pages, prov
 
 
 def _titles(document_json: str) -> list[str]:
@@ -41,6 +41,41 @@ def test_a_section_stops_at_the_next_heading_like_the_ui_does(flat_json: str) ->
     assert index.excerpt(risks.ref).text.strip() == "Risks"
     assert "supplier dispute" in index.excerpt(legal.ref).text
     assert "supplier dispute" not in index.excerpt(risks.ref).text
+
+
+def test_a_trailing_paragraph_stays_with_its_own_heading() -> None:
+    """A paragraph parented to the `h1` after an `h2` subtree belongs to the
+    `h1` — reading it under the `h2` highlights nodes the UI draws elsewhere,
+    and a question answered by the trailing text makes the `h1` read empty."""
+    index = index_of(build_nested_trailing().model_dump_json())
+    risks = next(u for u in index.units if u.title == "Risks")
+    legal = next(u for u in index.units if u.title == "Legal")
+
+    assert "Overall, risks remain manageable." in index.excerpt(risks.ref).text
+    assert "Overall" not in index.excerpt(legal.ref).text
+    assert "A dispute is pending." in index.excerpt(legal.ref).text
+
+
+def test_a_furniture_only_heading_does_not_suppress_the_page_fallback() -> None:
+    """A running section title is a real node but not a scope: with no body
+    heading left, the document must fall back to page units, not collapse
+    into one pseudo-section titled by its first paragraph."""
+    from docling_core.types.doc.common.content_layer import ContentLayer
+
+    doc = DoclingDocument(name="scan")
+    pages(doc, 2)
+    doc.add_heading(
+        text="Running Title",
+        level=1,
+        content_layer=ContentLayer.FURNITURE,
+        prov=prov(1, 780),
+    )
+    doc.add_text(label=DocItemLabel.TEXT, text="First page body.", prov=prov(1, 700))
+    doc.add_text(label=DocItemLabel.TEXT, text="Second page body.", prov=prov(2, 700))
+
+    index = index_of(doc.model_dump_json())
+
+    assert index.kind is UnitKind.PAGE
 
 
 def test_every_unit_anchors_on_a_node_the_graph_has(flat_json: str) -> None:
@@ -220,6 +255,20 @@ def test_a_section_opening_on_a_table_leads_with_its_prose() -> None:
     )
 
     assert leads[0] == "Le bareme figure ci-dessus et s'applique a compter du 1er janvier."
+
+
+def test_non_latin_leads_survive_the_boilerplate_pruning() -> None:
+    """The tokenizer is Latin-only, so a CJK lead yields no tokens. That is
+    absence of evidence, not boilerplate: deleting every lead on a Japanese
+    document destroyed the map feature exactly where numbered headings need it."""
+    leads = _leads(
+        _articles(
+            "本契約の賠償上限は五十万ユーロとする。",
+            "紛争はパリの裁判所の管轄とする。",
+        )
+    )
+
+    assert all(leads), f"non-Latin leads must be kept, got {leads!r}"
 
 
 def test_pages_get_no_lead(headless_json: str) -> None:

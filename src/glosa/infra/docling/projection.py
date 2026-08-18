@@ -75,8 +75,17 @@ class DoclingProjection:
         self._page_heights: dict[int, float | None] = {}
         self._page_widths: dict[int, float | None] = {}
         self._elements: tuple[Element, ...] = ()
+        self._unreachable: frozenset[str] = frozenset()
         self.by_ref: dict[str, Element] = {}
-        self._build()
+        try:
+            self._build()
+        except (RecursionError, TypeError, ValueError, AttributeError, KeyError) as exc:
+            # The payload is untrusted storage; whatever shape slipped past the
+            # defensive readers must still surface as the typed error the
+            # `DocumentProjector` port promises, not as a raw 500.
+            raise DocumentParseError(
+                f"document_json does not describe a readable DoclingDocument: {exc}"
+            ) from exc
 
     @classmethod
     def from_json(
@@ -106,10 +115,13 @@ class DoclingProjection:
                 raw_by_ref[ref] = item
 
         # Reading order first, then anything unreachable from `body` so no
-        # projected node is silently unaddressable.
+        # projected node is silently unaddressable. Unreachable refs are
+        # remembered: the frontend never attributes them to a section.
         ordered = [ref for ref in dfs_order(self.doc_data, skip_refs) if ref in raw_by_ref]
         seen = set(ordered)
-        ordered += [ref for ref in raw_by_ref if ref not in seen]
+        orphans = [ref for ref in raw_by_ref if ref not in seen]
+        ordered += orphans
+        self._unreachable = frozenset(orphans)
 
         elements: list[Element] = []
         for order, ref in enumerate(ordered):
@@ -196,28 +208,74 @@ class DoclingProjection:
         return tuple(e for e in self._elements if not e.is_furniture)
 
     def scopes(self, *, include_furniture: bool = False) -> tuple[Scope, ...]:
-        """Section scopes, following the NEXT chain exactly as the UI does."""
-        scopes: list[Scope] = []
-        anchor: Element | None = None
-        members: list[Element] = []
+        """Section scopes, exactly as the frontend's `computeSectionParents` draws them.
 
-        for element in self.readable(include_furniture=include_furniture):
-            if element.is_section:
-                if anchor is not None:
-                    scopes.append(Scope(anchor, tuple(members)))
-                elif members:
-                    # Content before the first heading: anchor it on its own
-                    # first element so the ref still resolves in the graph.
-                    scopes.append(Scope(members[0], tuple(members[1:])))
-                anchor, members = element, []
+        Two rules, both from `sectionParenting.ts`:
+
+        * along the NEXT chain, an element belongs to the most recent
+          `SectionHeader` — **unless** it has an explicit parent in the
+          projection, in which case it belongs to the section its parent chain
+          resolves to. An `h1`'s trailing paragraph stays with the `h1` even
+          when an `h2` subtree sits between them in reading order;
+        * elements unreachable from `body` are never claimed by a section.
+
+        Content owned by no section is anchored on its own first element so
+        its ref still resolves in the graph.
+        """
+        elements = self.readable(include_furniture=include_furniture)
+        anchors = [e for e in elements if e.is_section]
+        anchor_refs = {e.self_ref for e in anchors}
+
+        # Pass 1 — the NEXT chain: the section "current" at each position.
+        chain: dict[str, Element | None] = {}
+        current: Element | None = None
+        for element in elements:
+            if element.self_ref in self._unreachable:
+                chain[element.self_ref] = None
                 continue
-            members.append(element)
+            if element.is_section:
+                current = element
+            chain[element.self_ref] = current
 
-        if anchor is not None:
-            scopes.append(Scope(anchor, tuple(members)))
-        elif members:
-            scopes.append(Scope(members[0], tuple(members[1:])))
+        # Pass 2 — attribution: explicit parent chain first, NEXT chain else.
+        members: dict[str, list[Element]] = {ref: [] for ref in anchor_refs}
+        unowned: list[Element] = []
+        for element in elements:
+            if element.is_section:
+                continue
+            owner = self._owning_section(element, chain)
+            if owner is None or owner.self_ref not in members:
+                # A parent chain that dead-ends (or lands outside the scoped
+                # elements, e.g. a furniture heading) falls back to the chain.
+                owner = chain.get(element.self_ref)
+            if owner is None or owner.self_ref not in members:
+                unowned.append(element)
+            else:
+                members[owner.self_ref].append(element)
+
+        scopes: list[Scope] = []
+        if unowned:
+            scopes.append(Scope(unowned[0], tuple(unowned[1:])))
+        scopes += [Scope(anchor, tuple(members[anchor.self_ref])) for anchor in anchors]
         return tuple(scopes)
+
+    def _owning_section(
+        self, element: Element, chain: dict[str, Element | None], depth: int = 0
+    ) -> Element | None:
+        """The section `element` sits inside in the UI, or None.
+
+        Mirrors the frontend's resolution: a node with no projected parent
+        takes its NEXT-chain attribution; a node with one resolves through it.
+        The depth bound mirrors the frontend's cycle guard.
+        """
+        if element.is_section:
+            return element
+        if depth > 64:
+            return None
+        parent = self.by_ref.get(element.parent) if element.parent else None
+        if parent is None:
+            return chain.get(element.self_ref)
+        return self._owning_section(parent, chain, depth + 1)
 
     def page_elements(
         self, page_no: int, *, include_furniture: bool = False

@@ -106,6 +106,35 @@ def test_folding_leaves_these_alone(token: str) -> None:
     assert fold(token) == token
 
 
+@pytest.mark.parametrize(
+    ("singular", "plural"),
+    [
+        ("partie", "parties"),
+        ("garantie", "garanties"),
+        ("categorie", "categories"),
+        ("bureau", "bureaux"),
+        ("reseau", "reseaux"),
+        ("niveau", "niveaux"),
+        ("tableau", "tableaux"),
+        ("eau", "eaux"),
+        ("vie", "vies"),
+    ],
+)
+def test_french_singular_and_plural_meet_in_the_same_bucket(singular: str, plural: str) -> None:
+    """The failure class the folder exists to remove, on the corpus it targets.
+
+    "garanties" folding to "garanty" while "garantie" stayed put meant the one
+    section about warranties scored zero on a warranty question."""
+    assert fold(singular) == fold(plural)
+
+
+def test_ligatures_and_curly_apostrophes_tokenize_like_their_ascii_forms() -> None:
+    """NFKD decomposes accents but not œ/æ or the word-processor apostrophe."""
+    assert tokenize("mise en œuvre") == tokenize("mise en oeuvre")
+    assert tokenize("l’indemnisation") == tokenize("l'indemnisation")  # noqa: RUF001
+    assert tokenize("maître d’œuvre") == tokenize("maitre d'oeuvre")  # noqa: RUF001
+
+
 def test_a_plural_query_finds_a_singular_document() -> None:
     """The failure this exists to remove."""
     index = Bm25Index([("clause", "Late delivery incurs a penalty of 2% per week.")])
